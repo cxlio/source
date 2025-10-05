@@ -1,0 +1,20 @@
+{
+	"private": true,
+	"name": "@cxl/ui.",
+	"version": "0.0.0",
+	"homepage": "https://github.com/cxlio/open/tree/main",
+	"devDependencies": {
+		"@cxl/build": "^1.0.0-beta",
+		"@cxl/ui": "^6.0.0-beta.2"
+	},
+	"type": "module",
+	"bugs": "https://github.com/cxlio/source/issues",
+	"scripts": {
+		"build": "npm run build --prefix source audit package docs && cp ./dist/source/package/index.bundle.js docs/demo",
+		"test": "npm run build test --prefix source"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/cxlio/source.git"
+	}
+}

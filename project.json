@@ -1,0 +1,13 @@
+{
+	"core": {
+		"filesExclude": ["./docs"]
+	},
+	"watch": {
+		"rules": {
+			"source": {
+				"files": ["source/*"],
+				"tasks": "npm run build --prefix source"
+			}
+		}
+	}
+}

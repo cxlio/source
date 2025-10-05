@@ -1,0 +1,47 @@
+<!doctype html>
+<head>
+	<title>@cxl/source - Demo</title>
+	<style>
+		body {
+			position: absolute;
+			inset: 0;
+			display: flex;
+			flex-direction: column;
+			padding: 0;
+			margin: 0;
+		}
+		#toolbar {
+			height: 60px;
+			box-sizing: border-box;
+			padding: 12px 16px;
+			display: flex;
+			align-items: center;
+		}
+		#source {
+			flex-grow: 1;
+		}
+	</style>
+	<script type="module" src="index.bundle.js"></script>
+</head>
+<body>
+	<div id="toolbar">
+		<c-t font="title-medium">@cxl/source</c-t>
+		<input style="margin-inline-start: auto" type="file" id="file" />
+	</div>
+	<c-source id="source"></c-source>
+</body>
+<script type="module">
+	const source = document.getElementById('source');
+
+	document.getElementById('file').addEventListener('change', async event => {
+		const file = event.target.files?.[0];
+		if (file) {
+			const text = await file.text();
+			source.value = text;
+		}
+	});
+
+	await fetch('index.bundle.js')
+		.then(r => r.text())
+		.then(r => (source.value = r));
+</script>

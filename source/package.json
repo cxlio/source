@@ -1,0 +1,13 @@
+{
+	"name": "@cxl/ui.source",
+	"version": "0.0.1",
+	"description": "A performant, virtualized source code viewer component for rendering and scrolling very large text buffers. Supports line-by-line rendering with automatic visible line management, suitable for file viewers, diffs, and source code editors.",
+	"license": "SEE LICENSE IN LICENSE.md",
+	"browser": "./index.bundle.js",
+	"type": "module",
+	"scripts": {
+		"build": "cxl-build",
+		"test": "npm run build test"
+	},
+	"bugs": "https://github.com/cxlio/source/issues"
+}
