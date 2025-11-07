@@ -21,7 +21,15 @@
 			flex-grow: 1;
 		}
 	</style>
-	<script type="module" src="index.bundle.js"></script>
+	<!--script type="module" src="index.bundle.js"></script-->
+	<script type="importmap">
+		{
+			"imports": {
+				"@cxl/ui": "/open/dist/ui/index.js"
+			}
+		}
+	</script>
+	<script type="module" src="../../dist/source/index.js"></script>
 </head>
 <body>
 	<div id="toolbar">

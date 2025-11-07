@@ -8,7 +8,7 @@ A performant, virtualized source code viewer component for rendering and scrolli
 
 -   Branch Version: [0.0.1](https://npmjs.com/package/@cxl/ui.source/v/0.0.1)
 -   License: SEE LICENSE IN LICENSE.md
--   Documentation: [Link](undefined)
+-   Documentation: [Link](https://github.com/cxlio/open/tree/main/source)
 -   Report Issues: [Github](https://github.com/cxlio/source/issues)
 
 ## Installation

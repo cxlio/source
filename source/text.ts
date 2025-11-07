@@ -28,6 +28,8 @@ export type SourceLine = {
 	text: string;
 };
 
+export type TextCanvas = ReturnType<typeof textCanvas>;
+
 export function getContext() {
 	const canvas = document.createElement('canvas');
 	const context = canvas.getContext('2d');
@@ -137,7 +139,6 @@ export function textCanvas(host: HTMLElement) {
 
 	function readLine(start: number, end: number, line: number) {
 		let lineY = -1;
-		let lineBottom = -1;
 		let lineHeight = 0;
 		let hasTabs = false;
 		let rect;
@@ -151,23 +152,22 @@ export function textCanvas(host: HTMLElement) {
 
 			if (rect.height > lineHeight) lineHeight = rect.height;
 
+			const x = rect.x - hostRect.x;
+
 			if (lineY === -1) {
 				lineY = rect.y - measureRect.y;
-				lineBottom = rect.y + lineHeight;
-			}
-
-			if (rect.y > lineBottom) break;
+			} else if (x === 0) break;
 
 			if (charRange.toString() === '\t') hasTabs = true;
 
 			chars.push({
 				y: lineY,
-				x: rect.x - hostRect.x,
+				x,
 				width: rect.width,
 				height: rect.height,
 				line,
 			});
-		} while (i++ < end);
+		} while (++i < end);
 
 		lineRange.setEnd(textN, i);
 		return createLine(lineRange, lineY, lineHeight, chars, hasTabs, line);
@@ -294,72 +294,6 @@ export function textCanvas(host: HTMLElement) {
 		ctx.textBaseline = 'alphabetic';
 	}
 
-	function getSubLineAtPosition(y: number) {
-		let accumulatedHeight = 0;
-		let targetLineData: SourceLine | undefined;
-		let lineTop = 0;
-		const maxHeight = host.offsetHeight - offsetY;
-
-		for (let i = firstVisibleLine; ; i++) {
-			const lineData = lineCache.get(i);
-			if (!lineData) break;
-
-			const lineHeight = lineData.height;
-			if (y >= accumulatedHeight && y < accumulatedHeight + lineHeight) {
-				targetLineData = lineData;
-				lineTop = accumulatedHeight;
-				break;
-			}
-
-			accumulatedHeight += lineHeight;
-			if (accumulatedHeight > maxHeight) break;
-		}
-
-		if (!targetLineData) return;
-
-		const yInLine = (y - lineTop) | 0;
-		const lineData = targetLineData.lines.find(
-			l => yInLine >= l.y && yInLine <= l.y + l.height,
-		);
-		return { lineData, accumulatedHeight };
-	}
-
-	function getCharacterAtPosition(x: number, y: number) {
-		const line = getSubLineAtPosition(y);
-		if (!line?.lineData) return;
-		const { lineData, accumulatedHeight } = line;
-
-		const char = lineData.chars.find(c => x < c.x + c.width);
-		return (
-			char && {
-				char,
-				lineData,
-				y: accumulatedHeight + char.y,
-			}
-		);
-	}
-
-	function getCaretAtPosition(x: number, y: number) {
-		const localX = x; //- hostRect.left;
-		const localY = y - offsetY;
-
-		const line = getSubLineAtPosition(localY);
-		if (!line?.lineData) return;
-		const { lineData, accumulatedHeight } = line;
-
-		const char =
-			lineData.chars.find(c => localX < c.x + c.width) ??
-			lineData.chars[lineData.chars.length - 1];
-		if (!char) return;
-		const isBefore = localX < char.x + char.width / 2;
-
-		return {
-			char,
-			x: isBefore ? char.x : char.x + char.width,
-			y: char.y + accumulatedHeight,
-		};
-	}
-
 	const { canvas, context: ctx } = getContext();
 	const textN = new Text();
 	const measureElement = create('div', { id: 'measure' }, textN);
@@ -384,7 +318,13 @@ export function textCanvas(host: HTMLElement) {
 		updateStyles,
 		renderLine,
 		lineCache,
-		getCharacterAtPosition,
-		getCaretAtPosition,
+
+		get firstVisibleLine() {
+			return firstVisibleLine;
+		},
+
+		get offsetY() {
+			return offsetY;
+		},
 	};
 }
