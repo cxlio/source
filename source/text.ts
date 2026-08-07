@@ -185,7 +185,7 @@ export function textCanvas(host: HTMLElement) {
 		const start = startLine[0];
 		let line = startLine[1];
 
-		const end = text.length - 1;
+		const end = text.length;
 		const result = [];
 
 		for (let i = start; i < end; i++) {
