@@ -4,113 +4,285 @@ export interface Piece {
 	length: number;
 }
 
+export interface BufferPosition {
+	line: number;
+	ch: number;
+}
+
+export interface BufferChange {
+	start: number;
+	end: number;
+	text: string;
+	removed: string;
+	lineStart: number;
+	lineEnd: number;
+	lineDelta: number;
+}
+
+interface IndexedPiece extends Piece {
+	lineBreaks: number;
+}
+
+function lowerBound(values: readonly number[], value: number) {
+	let low = 0;
+	let high = values.length;
+	while (low < high) {
+		const middle = (low + high) >> 1;
+		if (values[middle] < value) low = middle + 1;
+		else high = middle;
+	}
+	return low;
+}
+
 export class Buffer {
-	#table: Piece[] = [];
+	#table: IndexedPiece[] = [];
 	#addBuffer = '';
-	#prefixSums: number[] = [];
-	#source = '';
+	#addLineBreaks: number[] = [];
+	#lengths = [0];
+	#lineBreaks = [0];
+	#original = '';
+	#originalLineBreaks: number[] = [];
 
-	getLineCount(): number {
-		// always up‐to‐date after rebuildLineCounts()
-		return this.#prefixSums[this.#prefixSums.length - 1];
+	get length() {
+		return this.#lengths[this.#lengths.length - 1];
 	}
 
-	/**
-	 * Retrieves the content of a specific line from the composite text buffer,
-	 * enabling random-access line reading for virtual scrolling.
-	 * The function traverses the Piece table to stitch together original
-	 * and added buffer segments as one continuous text source.
-	 */
-	getLine(lineNumber: number): string {
-		const prefixSums = this.#prefixSums;
-		const totalLines = prefixSums[prefixSums.length - 1];
-		if (lineNumber < 0 || lineNumber >= totalLines) return '';
-		const table = this.#table;
-
-		// binary search for piece i so that
-		// prefixSums[i] <= lineNumber < prefixSums[i+1]
-		let lo = 0,
-			hi = table.length - 1;
-		while (lo < hi) {
-			const mid = (lo + hi) >> 1;
-			if (prefixSums[mid + 1] > lineNumber) hi = mid;
-			else lo = mid + 1;
-		}
-		const piece = table[lo];
-		const text =
-			piece.source === 'original' ? this.#source : this.#addBuffer;
-		const end = piece.start + piece.length;
-
-		// how many lines we skip inside this piece
-		const skipLines = lineNumber - prefixSums[lo];
-
-		// find byte‐offset in [start..end) where our line starts
-		let pos = piece.start;
-		for (let i = 0; i < skipLines; i++) {
-			const nl = text.indexOf('\n', pos);
-			// should always find one, because skipLines < lineCounts[pieceIndex]
-			pos = nl + 1;
-		}
-
-		// now pos is the start of our line. find its end.
-		const firstNL = text.indexOf('\n', pos);
-		let line = '';
-		if (firstNL >= 0 && firstNL < end) {
-			// newline is inside this piece
-			line = text.slice(pos, firstNL);
-		} else {
-			// no newline in this piece to end the line —
-			// take rest of piece, then carry on into subsequent pieces
-			line = text.slice(pos, end);
-			let pi = lo + 1;
-			while (pi < this.#table.length) {
-				const p2 = this.#table[pi];
-				const t2 =
-					p2.source === 'original' ? this.#source : this.#addBuffer;
-				const s2 = p2.start;
-				const e2 = s2 + p2.length;
-				const segment = t2.slice(s2, e2);
-				const nl2 = segment.indexOf('\n');
-				if (nl2 >= 0) {
-					line += segment.slice(0, nl2);
-					break;
-				} else {
-					line += segment;
-					pi++;
-				}
-			}
-		}
-
-		return line;
+	getLineCount() {
+		return this.#lineBreaks[this.#lineBreaks.length - 1] + 1;
 	}
 
-	reset(newSource: string) {
-		this.#source = newSource;
-		this.#table = [
-			{ source: 'original', start: 0, length: newSource.length },
-		];
+	getLine(line: number) {
+		if (line < 0 || line >= this.getLineCount()) return '';
+		const start = line ? this.#findLineBreak(line - 1) + 1 : 0;
+		let end =
+			line < this.getLineCount() - 1
+				? this.#findLineBreak(line)
+				: this.length;
+		if (end > start && this.charAt(end - 1) === '\r') end--;
+		return this.getText(start, end);
+	}
+
+	getText(start = 0, end = this.length) {
+		start = this.#clampIndex(start);
+		end = Math.max(start, this.#clampIndex(end));
+		if (start === end) return '';
+
+		const from = this.#boundary(start);
+		const to = this.#boundary(end);
+		const parts: string[] = [];
+		const lastPiece = Math.min(to.piece, this.#table.length - 1);
+		for (let index = from.piece; index <= lastPiece; index++) {
+			const piece = this.#table[index];
+			const pieceStart = index === from.piece ? from.offset : 0;
+			const pieceEnd =
+				index === to.piece ? to.offset : piece.length;
+			if (pieceEnd <= pieceStart) continue;
+			const source = this.#source(piece);
+			parts.push(
+				source.slice(
+					piece.start + pieceStart,
+					piece.start + pieceEnd,
+				),
+			);
+		}
+		return parts.join('');
+	}
+
+	charAt(index: number) {
+		if (index < 0 || index >= this.length) return '';
+		const { piece: pieceIndex, offset } = this.#boundary(index);
+		const piece = this.#table[pieceIndex];
+		return this.#source(piece).charAt(piece.start + offset);
+	}
+
+	positionAt(index: number): BufferPosition {
+		index = this.#clampIndex(index);
+		const line = this.#countLineBreaksBefore(index);
+		const lineStart = line ? this.#findLineBreak(line - 1) + 1 : 0;
+		return { line, ch: index - lineStart };
+	}
+
+	indexAt({ line, ch }: BufferPosition) {
+		line = Math.max(0, Math.min(line | 0, this.getLineCount() - 1));
+		const start = line ? this.#findLineBreak(line - 1) + 1 : 0;
+		let end =
+			line < this.getLineCount() - 1
+				? this.#findLineBreak(line)
+				: this.length;
+		if (end > start && this.charAt(end - 1) === '\r') end--;
+		return Math.max(start, Math.min(start + Math.max(0, ch), end));
+	}
+
+	insert(index: number, text: string) {
+		return this.replace(index, index, text);
+	}
+
+	delete(start: number, end: number) {
+		return this.replace(start, end, '');
+	}
+
+	replace(start: number, end: number, text: string): BufferChange {
+		start = this.#clampIndex(start);
+		end = Math.max(start, this.#clampIndex(end));
+		const oldLineCount = this.getLineCount();
+		const lineStart = this.positionAt(start).line;
+		const oldLineEnd = this.positionAt(end).line;
+		const removed = this.getText(start, end);
+		const from = this.#boundary(start);
+		const to = this.#boundary(end);
+		const table: IndexedPiece[] = [];
+
+		for (let index = 0; index < from.piece; index++)
+			table.push(this.#table[index]);
+		if (from.offset) {
+			const piece = this.#table[from.piece];
+			table.push(this.#piece(piece.source, piece.start, from.offset));
+		}
+
+		if (text) {
+			const addStart = this.#addBuffer.length;
+			this.#addBuffer += text;
+			this.#appendLineBreaks(this.#addLineBreaks, text, addStart);
+			table.push(this.#piece('add', addStart, text.length));
+		}
+
+		if (to.piece < this.#table.length) {
+			const endPiece = this.#table[to.piece];
+			if (to.offset < endPiece.length)
+				table.push(
+					this.#piece(
+						endPiece.source,
+						endPiece.start + to.offset,
+						endPiece.length - to.offset,
+					),
+				);
+		}
+		for (let index = to.piece + 1; index < this.#table.length; index++)
+			table.push(this.#table[index]);
+
+		this.#table = this.#merge(table);
+		this.#rebuildIndexes();
+		const newLineEnd = this.positionAt(start + text.length).line;
+		return {
+			start,
+			end,
+			text,
+			removed,
+			lineStart,
+			lineEnd: Math.max(oldLineEnd, newLineEnd),
+			lineDelta: this.getLineCount() - oldLineCount,
+		};
+	}
+
+	reset(source: string) {
+		this.#original = source;
+		this.#originalLineBreaks = [];
+		this.#appendLineBreaks(this.#originalLineBreaks, source, 0);
 		this.#addBuffer = '';
-		this.#rebuildLineCounts();
+		this.#addLineBreaks = [];
+		this.#table = source.length
+			? [this.#piece('original', 0, source.length)]
+			: [];
+		this.#rebuildIndexes();
 	}
 
-	#rebuildLineCounts() {
-		const counts: number[] = [];
-		for (const p of this.#table) {
-			const text =
-				p.source === 'original' ? this.#source : this.#addBuffer;
-			let cnt = 0;
-			// count '\n' in [p.start, p.start+p.length)
-			let idx = text.indexOf('\n', p.start - 1);
-			while (idx >= 0 && idx < p.start + p.length - 1) {
-				cnt++;
-				idx = text.indexOf('\n', idx + 1);
-			}
-			// if the piece isn’t empty, it has at least 1 line
-			counts.push(p.length > 0 ? cnt + 1 : 0);
+	#appendLineBreaks(target: number[], text: string, offset: number) {
+		let index = text.indexOf('\n');
+		while (index !== -1) {
+			target.push(offset + index);
+			index = text.indexOf('\n', index + 1);
 		}
-		const ps = (this.#prefixSums = [0]);
-		for (const c of counts) {
-			ps.push(ps[ps.length - 1] + c);
+	}
+
+	#boundary(index: number) {
+		const boundary = lowerBound(this.#lengths, index);
+		if (this.#lengths[boundary] === index)
+			return { piece: boundary, offset: 0 };
+		const piece = boundary - 1;
+		return { piece, offset: index - this.#lengths[piece] };
+	}
+
+	#clampIndex(index: number) {
+		if (index === Infinity) return this.length;
+		if (!Number.isFinite(index)) return 0;
+		return Math.max(0, Math.min(Math.trunc(index), this.length));
+	}
+
+	#countLineBreaksBefore(index: number) {
+		if (index <= 0) return 0;
+		if (index >= this.length)
+			return this.#lineBreaks[this.#lineBreaks.length - 1];
+		const boundary = this.#boundary(index);
+		const piece = this.#table[boundary.piece];
+		const breaks = this.#sourceLineBreaks(piece);
+		return (
+			this.#lineBreaks[boundary.piece] +
+			lowerBound(breaks, piece.start + boundary.offset) -
+			lowerBound(breaks, piece.start)
+		);
+	}
+
+	#findLineBreak(line: number) {
+		let low = 0;
+		let high = this.#table.length - 1;
+		while (low < high) {
+			const middle = (low + high) >> 1;
+			if (this.#lineBreaks[middle + 1] > line) high = middle;
+			else low = middle + 1;
 		}
+		const piece = this.#table[low];
+		const breaks = this.#sourceLineBreaks(piece);
+		const first = lowerBound(breaks, piece.start);
+		const localLine = line - this.#lineBreaks[low];
+		return (
+			this.#lengths[low] + breaks[first + localLine] - piece.start
+		);
+	}
+
+	#merge(table: IndexedPiece[]) {
+		const merged: IndexedPiece[] = [];
+		for (const piece of table) {
+			const previous = merged.at(-1);
+			if (
+				previous &&
+				previous.source === piece.source &&
+				previous.start + previous.length === piece.start
+			) {
+				previous.length += piece.length;
+				previous.lineBreaks += piece.lineBreaks;
+			} else merged.push(piece);
+		}
+		return merged;
+	}
+
+	#piece(source: Piece['source'], start: number, length: number) {
+		const breaks = this.#sourceLineBreaks({ source });
+		const lineBreaks =
+			lowerBound(breaks, start + length) - lowerBound(breaks, start);
+		return { source, start, length, lineBreaks };
+	}
+
+	#rebuildIndexes() {
+		this.#lengths = [0];
+		this.#lineBreaks = [0];
+		for (const piece of this.#table) {
+			this.#lengths.push(
+				this.#lengths[this.#lengths.length - 1] + piece.length,
+			);
+			this.#lineBreaks.push(
+				this.#lineBreaks[this.#lineBreaks.length - 1] +
+					piece.lineBreaks,
+			);
+		}
+	}
+
+	#source(piece: Pick<Piece, 'source'>) {
+		return piece.source === 'original' ? this.#original : this.#addBuffer;
+	}
+
+	#sourceLineBreaks(piece: Pick<Piece, 'source'>) {
+		return piece.source === 'original'
+			? this.#originalLineBreaks
+			: this.#addLineBreaks;
 	}
 }

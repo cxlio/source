@@ -2,6 +2,15 @@ import { spec, type TestApi } from '@cxl/spec';
 import { Buffer } from './buffer.js';
 import { textCanvas, SourceLine } from './text.js';
 
+const LargeLineCount = 100_000;
+
+function createLargeSource() {
+	return Array.from(
+		{ length: LargeLineCount },
+		(_, line) => `${line}\t${'value'.repeat(8)}`,
+	).join('\n');
+}
+
 function createTextCanvas(a: TestApi) {
 	const host = a.element('div');
 	host.style.cssText =
@@ -16,6 +25,95 @@ function createTextCanvas(a: TestApi) {
 }
 
 export default spec('@cxl/ui.source', a => {
+	a.test('Buffer', it => {
+		it.should('read empty multiline and CRLF documents', a => {
+			const buffer = new Buffer();
+			buffer.reset('');
+			a.equal(buffer.length, 0);
+			a.equal(buffer.getLineCount(), 1);
+			a.equal(buffer.getLine(0), '');
+
+			buffer.reset('one\r\ntwo\n');
+			a.equal(buffer.length, 9);
+			a.equal(buffer.getLineCount(), 3);
+			a.equal(buffer.getLine(0), 'one');
+			a.equal(buffer.getLine(1), 'two');
+			a.equal(buffer.getLine(2), '');
+			a.equal(buffer.getText(), 'one\r\ntwo\n');
+		});
+
+		it.should('convert positions and indexes', a => {
+			const buffer = new Buffer();
+			buffer.reset('one\r\n😀two\nthree');
+
+			a.equalValues(buffer.positionAt(5), { line: 1, ch: 0 });
+			a.equalValues(buffer.positionAt(7), { line: 1, ch: 2 });
+			a.equal(buffer.indexAt({ line: 1, ch: 2 }), 7);
+			a.equal(buffer.indexAt({ line: 0, ch: Infinity }), 3);
+			a.equal(buffer.indexAt({ line: 20, ch: Infinity }), buffer.length);
+		});
+
+		it.should('insert delete and replace across pieces', a => {
+			const buffer = new Buffer();
+			buffer.reset('one\nthree');
+
+			const inserted = buffer.insert(4, 'two\n');
+			a.equalValues(inserted, {
+				start: 4,
+				end: 4,
+				text: 'two\n',
+				removed: '',
+				lineStart: 1,
+				lineEnd: 2,
+				lineDelta: 1,
+			});
+			a.equal(buffer.getText(), 'one\ntwo\nthree');
+			a.equal(buffer.getLine(1), 'two');
+
+			const replaced = buffer.replace(4, 8, 'second\n');
+			a.equal(replaced.removed, 'two\n');
+			a.equal(buffer.getText(), 'one\nsecond\nthree');
+
+			const deleted = buffer.delete(4, 11);
+			a.equal(deleted.removed, 'second\n');
+			a.equal(buffer.getText(), 'one\nthree');
+		});
+
+		it.should('preserve content through long edit sequences', a => {
+			const buffer = new Buffer();
+			let expected = 'alpha\nbeta\ngamma';
+			buffer.reset(expected);
+
+			for (let edit = 0; edit < 2_000; edit++) {
+				const start = (edit * 17) % (expected.length + 1);
+				const end = Math.min(expected.length, start + (edit % 3));
+				const text = edit % 5 === 0 ? `\n${edit}` : String(edit % 10);
+				buffer.replace(start, end, text);
+				expected = expected.slice(0, start) + text + expected.slice(end);
+			}
+
+			a.equal(buffer.getText(), expected);
+			a.equal(buffer.length, expected.length);
+			a.equal(buffer.getLineCount(), expected.split('\n').length);
+			for (let index = 0; index <= buffer.length; index += 97)
+				a.equal(buffer.indexAt(buffer.positionAt(index)), index);
+		});
+
+		it.should('edit a large document without rebuilding its text', a => {
+			const buffer = new Buffer();
+			const source = createLargeSource();
+			buffer.reset(source);
+			const index = buffer.indexAt({ line: 50_000, ch: 4 });
+			const start = performance.now();
+			buffer.insert(index, 'updated');
+			const duration = performance.now() - start;
+
+			a.equal(buffer.getLineCount(), LargeLineCount);
+			a.equal(buffer.getLine(50_000).slice(0, 18), '5000updated0\tvalue');
+			a.log({ largeDocumentEditDuration: duration });
+		});
+	});
+
 	a.test('textCanvas', it => {
 		it.should('begin resets firstVisibleLine and offsetY', a => {
 			const tc = createTextCanvas(a);
@@ -107,11 +205,7 @@ export default spec('@cxl/ui.source', a => {
 		it.should('bounds painting work to the viewport', a => {
 			const tc = createTextCanvas(a);
 			const buffer = new Buffer();
-			const lineCount = 100_000;
-			const source = Array.from(
-				{ length: lineCount },
-				(_, line) => `${line}\t${'value'.repeat(8)}`,
-			).join('\n');
+			const source = createLargeSource();
 			const resetStart = performance.now();
 			buffer.reset(source);
 			const resetDuration = performance.now() - resetStart;
@@ -132,7 +226,7 @@ export default spec('@cxl/ui.source', a => {
 				tc.renderLine(line, buffer.getLine(line));
 			tc.commit(0);
 			const scrollDuration = performance.now() - scrollStart;
-			a.equal(buffer.getLineCount(), lineCount);
+			a.equal(buffer.getLineCount(), LargeLineCount);
 			a.equal(buffer.getLine(99_999), `99999\t${'value'.repeat(8)}`);
 			a.ok(source.length > 4_000_000);
 			a.ok(paintedLines > 0);
