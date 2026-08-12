@@ -10,7 +10,7 @@
 		"test": "npm run build test"
 	},
 	"bugs": "https://github.com/cxlio/source/issues",
-	"homepage": "https://github.com/cxlio/open/tree/@cxl/ui.source",
+	"homepage": "https://cxlio.github.io/docs/@cxl/ui.source",
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/cxlio/source.git",

@@ -2,7 +2,7 @@
 	"private": true,
 	"name": "@cxl/ui.",
 	"version": "0.0.0",
-	"homepage": "https://github.com/cxlio/open/tree/main",
+	"homepage": "https://cxlio.github.io/docs/",
 	"devDependencies": {
 		"@cxl/build": "^1.0.0-beta",
 		"@cxl/spec": "^1.0.1",
