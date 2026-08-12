@@ -26,6 +26,11 @@ export class Cache<K, V> {
 		for (const x of this.map.values()) if (pred(x)) return x;
 	}
 
+	deleteWhere(pred: (value: V, key: K) => boolean) {
+		for (const [key, value] of this.map)
+			if (pred(value, key)) this.map.delete(key);
+	}
+
 	clear() {
 		this.map.clear();
 	}

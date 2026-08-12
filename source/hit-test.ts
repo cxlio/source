@@ -1,72 +1,60 @@
-import type { TextCanvas, SourceLine } from './text.js';
+import type { TextCanvas } from './text.js';
 
 export class HitTest {
 	constructor(protected textCanvas: TextCanvas) {}
 
 	getCharacterAtPosition(x: number, y: number) {
-		const line = this.#getSubLineAtPosition(y);
-		if (!line?.lineData) return;
-		const { lineData, accumulatedHeight } = line;
-
-		const char = lineData.chars.find(c => x < c.x + c.width);
-		return (
-			char && {
-				char,
-				lineData,
-				y: accumulatedHeight + char.y,
-			}
-		);
+		const hit = this.#getLineAtPosition(y - this.textCanvas.offsetY);
+		if (!hit?.part) return;
+		const char = hit.part.chars.find(item => x < item.x + item.width);
+		return char && { char, lineData: hit.sourceLine, y: hit.top + char.y };
 	}
 
 	getCaretAtPosition(x: number, y: number) {
-		const localX = x;
-		const localY = y - this.textCanvas.offsetY; // - offsetY;
+		const hit = this.#getLineAtPosition(y - this.textCanvas.offsetY);
+		if (!hit) return;
+		const { part, sourceLine, top } = hit;
+		if (!part)
+			return {
+				position: { line: sourceLine.row, ch: 0 },
+				x: 0,
+				y: top,
+				height: sourceLine.height,
+				line: sourceLine.row,
+			};
 
-		const line = this.#getSubLineAtPosition(localY);
-		if (!line?.lineData) return;
-		const { lineData, accumulatedHeight } = line;
-
-		const char =
-			lineData.chars.find(c => localX < c.x + c.width) ??
-			lineData.chars[lineData.chars.length - 1];
-		if (!char) return;
-		const isBefore = localX < char.x + char.width / 2;
-
+		const index = part.chars.findIndex(
+			char => x < char.x + char.width,
+		);
+		const charIndex = index === -1 ? part.chars.length - 1 : index;
+		const char = part.chars[charIndex];
+		const isBefore = x < char.x + char.width / 2;
 		return {
-			char,
+			position: {
+				line: sourceLine.row,
+				ch: part.startIndex + charIndex + (isBefore ? 0 : 1),
+			},
 			x: isBefore ? char.x : char.x + char.width,
-			y: char.y + accumulatedHeight,
+			y: top + part.y,
+			height: char.height,
+			line: sourceLine.row,
 		};
 	}
 
-	#getSubLineAtPosition(y: number) {
-		let accumulatedHeight = 0;
-		let targetLineData: SourceLine | undefined;
-		let lineTop = 0;
-		const maxHeight =
-			this.textCanvas.canvas.offsetHeight - this.textCanvas.offsetY; // - offsetY;
-
-		for (let i = this.textCanvas.firstVisibleLine; ; i++) {
-			const lineData = this.textCanvas.lineCache.get(i);
-			if (!lineData) break;
-
-			const lineHeight = lineData.height;
-			if (y >= accumulatedHeight && y < accumulatedHeight + lineHeight) {
-				targetLineData = lineData;
-				lineTop = accumulatedHeight;
-				break;
+	#getLineAtPosition(y: number) {
+		for (let row = this.textCanvas.firstVisibleLine; ; row++) {
+			const sourceLine = this.textCanvas.lineCache.get(row);
+			if (!sourceLine) return;
+			const top = sourceLine.offsetTop;
+			if (y >= top && y < top + sourceLine.height) {
+				const localY = y - top;
+				const part = [...sourceLine.lines].find(
+					line =>
+						localY >= line.y && localY <= line.y + line.height,
+				);
+				return { part, sourceLine, top };
 			}
-
-			accumulatedHeight += lineHeight;
-			if (accumulatedHeight > maxHeight) break;
+			if (top > this.textCanvas.canvas.offsetHeight) return;
 		}
-
-		if (!targetLineData) return;
-
-		const yInLine = (y - lineTop) | 0;
-		const lineData = targetLineData.lines.find(
-			l => yInLine >= l.y && yInLine <= l.y + l.height,
-		);
-		return { lineData, accumulatedHeight };
 	}
 }

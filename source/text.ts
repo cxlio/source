@@ -26,7 +26,22 @@ export type SourceLine = {
 	width: number;
 	height: number;
 	text: string;
+	row: number;
+	offsetTop: number;
 };
+
+export interface TextPosition {
+	line: number;
+	ch: number;
+}
+
+export interface TextRect {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+	line: number;
+}
 
 export type TextCanvas = ReturnType<typeof textCanvas>;
 
@@ -48,10 +63,11 @@ export function textCanvas(host: HTMLElement) {
 		lineIndex: number,
 	): SubLine {
 		const text = range.toString();
-		const m = ctx.measureText(text);
+		const metrics = ctx.measureText('Mg');
 		const extraSpace =
-			height - (m.actualBoundingBoxAscent + m.actualBoundingBoxDescent);
-		const baseline = extraSpace / 2 + m.actualBoundingBoxAscent;
+			height -
+			(metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent);
+		const baseline = extraSpace / 2 + metrics.fontBoundingBoxAscent;
 
 		return {
 			text,
@@ -75,8 +91,10 @@ export function textCanvas(host: HTMLElement) {
 		range.setEnd(textN, len);
 		const lineRects = range.getClientRects();
 		let lineNumber = 0;
+		const firstRect = lineRects.item(0);
+		if (!firstRect) return;
 
-		y += lineRects[0]?.y ?? 0;
+		y += firstRect.y;
 
 		for (const rect of lineRects) {
 			if (y >= rect.top && y <= rect.bottom) break;
@@ -86,7 +104,7 @@ export function textCanvas(host: HTMLElement) {
 		let low = 0;
 		let high = len - 1;
 		let charIndex = 0;
-		const lineRect = lineRects[lineNumber];
+		const lineRect = lineRects.item(lineNumber);
 
 		if (!lineRect) return;
 
@@ -137,7 +155,12 @@ export function textCanvas(host: HTMLElement) {
 		return charRange.getBoundingClientRect();
 	}
 
-	function readLine(start: number, end: number, line: number) {
+	function readLine(
+		start: number,
+		end: number,
+		row: number,
+		lineIndex: number,
+	) {
 		let lineY = -1;
 		let lineHeight = 0;
 		let hasTabs = false;
@@ -165,12 +188,19 @@ export function textCanvas(host: HTMLElement) {
 				x,
 				width: rect.width,
 				height: rect.height,
-				line,
+				line: row,
 			});
 		} while (++i < end);
 
 		lineRange.setEnd(textN, i);
-		return createLine(lineRange, lineY, lineHeight, chars, hasTabs, line);
+		return createLine(
+			lineRange,
+			lineY,
+			lineHeight,
+			chars,
+			hasTabs,
+			lineIndex,
+		);
 	}
 
 	function getVisibleSubLines(sourceLine: SourceLine, offsetY: number) {
@@ -188,21 +218,22 @@ export function textCanvas(host: HTMLElement) {
 		const end = text.length;
 		const result = [];
 
-		for (let i = start; i < end; i++) {
+		let i = start;
+		while (i < end) {
 			const cachedLine = lines.get(line);
 			if (cachedLine) {
 				if (cachedLine.y + cachedLine.height > offsetY)
 					result.push(cachedLine);
-				i = cachedLine.endIndex;
 				if (cachedLine.y > maxY) break;
+				i = cachedLine.endIndex + 1;
 				line++;
 				continue;
 			}
-			const subline = readLine(i, end, line);
+			const subline = readLine(i, end, sourceLine.row, line);
 			result.push(lines.set(line, subline));
 
 			if (subline.y > maxY) break;
-			i = subline.endIndex;
+			i = subline.endIndex + 1;
 		}
 
 		return result;
@@ -220,12 +251,15 @@ export function textCanvas(host: HTMLElement) {
 			height: measureElement.offsetHeight,
 			width: measureElement.offsetWidth,
 			text,
+			row,
+			offsetTop: 0,
 		});
 	}
 
 	function renderLine(row: number, text: string) {
 		const line = measure(text, row);
 		const offsetTop = y;
+		line.offsetTop = offsetTop;
 		toRender.push(line);
 		y += line.height;
 
@@ -282,6 +316,91 @@ export function textCanvas(host: HTMLElement) {
 		}
 	}
 
+	function getCharacterX(line: SubLine, index: number) {
+		const local = index - line.startIndex;
+		if (local <= 0) return line.chars[0]?.x ?? 0;
+		if (local >= line.chars.length) {
+			const char = line.chars[line.chars.length - 1];
+			return char.x + char.width;
+		}
+		return line.chars[local].x;
+	}
+
+	function getCaret({ line, ch }: TextPosition): TextRect | undefined {
+		const sourceLine = lineCache.get(line);
+		if (!sourceLine) return;
+		const parts = [...sourceLine.lines];
+		const part =
+			parts.find(
+				item =>
+					ch >= item.startIndex && ch <= item.endIndex + 1,
+			) ?? parts.at(-1);
+		if (!part)
+			return {
+				x: 0,
+				y: sourceLine.offsetTop,
+				width: 1,
+				height: sourceLine.height,
+				line,
+			};
+		return {
+			x: getCharacterX(part, ch),
+			y: sourceLine.offsetTop + part.y,
+			width: 1,
+			height: part.height,
+			line,
+		};
+	}
+
+	function getSelectionRects(
+		start: TextPosition,
+		end: TextPosition,
+	): TextRect[] {
+		const result: TextRect[] = [];
+		for (const sourceLine of lineCache) {
+			if (sourceLine.row < start.line || sourceLine.row > end.line)
+				continue;
+			const rangeStart =
+				sourceLine.row === start.line ? start.ch : 0;
+			const rangeEnd =
+				sourceLine.row === end.line ? end.ch : sourceLine.text.length;
+			if (rangeStart === rangeEnd && start.line === end.line) continue;
+
+			const parts = [...sourceLine.lines];
+			if (!parts.length) {
+				result.push({
+					x: 0,
+					y: sourceLine.offsetTop,
+					width: 2,
+					height: sourceLine.height,
+					line: sourceLine.row,
+				});
+				continue;
+			}
+
+			for (const part of parts) {
+				const partStart = Math.max(rangeStart, part.startIndex);
+				const partEnd = Math.min(rangeEnd, part.endIndex + 1);
+				if (partEnd <= partStart) continue;
+				const x = getCharacterX(part, partStart);
+				result.push({
+					x,
+					y: sourceLine.offsetTop + part.y,
+					width: Math.max(2, getCharacterX(part, partEnd) - x),
+					height: part.height,
+					line: sourceLine.row,
+				});
+			}
+		}
+		return result;
+	}
+
+	function invalidate(start: number, end: number, lineDelta: number) {
+		lineCache.deleteWhere((_, line) =>
+			lineDelta ? line >= start : line >= start && line <= end,
+		);
+	}
+
 	function resize() {
 		hasResized = true;
 		lineCache.clear();
@@ -313,6 +432,9 @@ export function textCanvas(host: HTMLElement) {
 		begin,
 		canvas: ctx.canvas,
 		commit,
+		getCaret,
+		getSelectionRects,
+		invalidate,
 		measureElement,
 		resize,
 		updateStyles,

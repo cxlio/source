@@ -21,11 +21,10 @@
 			flex-grow: 1;
 		}
 	</style>
-	<!--script type="module" src="index.bundle.js"></script-->
 	<script type="importmap">
 		{
 			"imports": {
-				"@cxl/ui": "/open/dist/ui/index.js"
+				"@cxl/ui": "/source/node_modules/@cxl/ui/index.js"
 			}
 		}
 	</script>
@@ -49,7 +48,7 @@
 		}
 	});
 
-	await fetch('index.bundle.js')
+	await fetch('../../source/index.ts')
 		.then(r => r.text())
 		.then(r => (source.value = r));
 </script>
