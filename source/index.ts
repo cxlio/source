@@ -273,6 +273,12 @@ canvas {
 				return caret && buffer.indexAt(caret.position);
 			}
 
+			function stopPointerSelection(event?: PointerEvent) {
+				if (event && host.hasPointerCapture(event.pointerId))
+					host.releasePointerCapture(event.pointerId);
+				pointerAnchor = undefined;
+			}
+
 			return merge(
 				onFontsReady().switchMap(() =>
 					onVisibility($).switchMap(visible =>
@@ -342,6 +348,7 @@ canvas {
 					replaceSelection(value);
 				}),
 				on(host, 'pointerdown').tap(event => {
+					if (event.button !== 0) return;
 					const position = pointerPosition(event);
 					if (position === undefined) return;
 					event.preventDefault();
@@ -355,6 +362,10 @@ canvas {
 				}),
 				on(host, 'pointermove').tap(event => {
 					if (pointerAnchor === undefined) return;
+					if (!(event.buttons & 1)) {
+						stopPointerSelection(event);
+						return;
+					}
 					const position = pointerPosition(event);
 					if (position === undefined) return;
 					anchor = pointerAnchor;
@@ -362,9 +373,9 @@ canvas {
 					syncInput();
 					renderSelection();
 				}),
-				on(host, 'pointerup').tap(event => {
-					if (host.hasPointerCapture(event.pointerId))
-						host.releasePointerCapture(event.pointerId);
+				on(host, 'pointerup').tap(stopPointerSelection),
+				on(host, 'pointercancel').tap(stopPointerSelection),
+				on(host, 'lostpointercapture').tap(() => {
 					pointerAnchor = undefined;
 				}),
 				onThemeChange.tap(() => {

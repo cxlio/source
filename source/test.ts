@@ -287,6 +287,55 @@ export default spec('@cxl/ui.source', a => {
 			a.ok(backward.success, backward.message ?? backward.failureMessage);
 			a.equal(clipboardSelection(target), 'ABC');
 		});
+
+		it.testElement('ignore pointer movement after a context menu', async a => {
+			const { source, target } = await createSourceEditor(a, 'ABCDE');
+			const body = source.shadowRoot?.querySelector<HTMLElement>('#body');
+			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>(
+				'canvas',
+			);
+			if (!body || !canvas) {
+				a.ok(false, 'editor rendering surface exists');
+				return;
+			}
+			const rect = body.getBoundingClientRect();
+			const width = canvas.getContext('2d')?.measureText('ABCD').width ?? 29;
+			const y = rect.top + 6;
+
+			body.dispatchEvent(
+				new PointerEvent('pointerdown', {
+					bubbles: true,
+					button: 2,
+					buttons: 2,
+					clientX: rect.left + 2,
+					clientY: y,
+					pointerId: 1,
+				}),
+			);
+			body.dispatchEvent(
+				new MouseEvent('contextmenu', {
+					bubbles: true,
+					button: 2,
+					clientX: rect.left + 2,
+					clientY: y,
+				}),
+			);
+			body.dispatchEvent(
+				new PointerEvent('pointermove', {
+					bubbles: true,
+					buttons: 0,
+					clientX: rect.left + width,
+					clientY: y,
+					pointerId: 1,
+				}),
+			);
+
+			a.equal(
+				clipboardSelection(target),
+				'',
+				'right click does not leave pointer selection active',
+			);
+		});
 	});
 
 	a.test('Buffer', it => {
