@@ -53,12 +53,7 @@ export class Buffer {
 
 	getLine(line: number) {
 		if (line < 0 || line >= this.getLineCount()) return '';
-		const start = line ? this.#findLineBreak(line - 1) + 1 : 0;
-		let end =
-			line < this.getLineCount() - 1
-				? this.#findLineBreak(line)
-				: this.length;
-		if (end > start && this.charAt(end - 1) === '\r') end--;
+		const [start, end] = this.#lineBounds(line);
 		return this.getText(start, end);
 	}
 
@@ -104,12 +99,7 @@ export class Buffer {
 
 	indexAt({ line, ch }: BufferPosition) {
 		line = Math.max(0, Math.min(line | 0, this.getLineCount() - 1));
-		const start = line ? this.#findLineBreak(line - 1) + 1 : 0;
-		let end =
-			line < this.getLineCount() - 1
-				? this.#findLineBreak(line)
-				: this.length;
-		if (end > start && this.charAt(end - 1) === '\r') end--;
+		const [start, end] = this.#lineBounds(line);
 		return Math.max(start, Math.min(start + Math.max(0, ch), end));
 	}
 
@@ -237,6 +227,16 @@ export class Buffer {
 		return (
 			this.#lengths[low] + breaks[first + localLine] - piece.start
 		);
+	}
+
+	#lineBounds(line: number): [number, number] {
+		const start = line ? this.#findLineBreak(line - 1) + 1 : 0;
+		let end =
+			line < this.getLineCount() - 1
+				? this.#findLineBreak(line)
+				: this.length;
+		if (end > start && this.charAt(end - 1) === '\r') end--;
+		return [start, end];
 	}
 
 	#merge(table: IndexedPiece[]) {

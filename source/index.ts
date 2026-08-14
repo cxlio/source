@@ -19,7 +19,7 @@ import { textCanvas } from './text.js';
 import { sourceCursor } from './cursor.js';
 import { HitTest } from './hit-test.js';
 import { Buffer } from './buffer.js';
-import { createTextInput } from './input.js';
+import { createTextInput, type TextInputUpdate } from './input.js';
 
 /**
  * Displays a large text buffer with incremental editing and viewport rendering.
@@ -88,6 +88,7 @@ canvas {
 			const refresh = new ReplaySubject<{ dataLength: number }>(1);
 			const buffer = new Buffer();
 			const input = createTextInput($, host);
+			const paste = on(input.element, 'paste');
 			const contextRadius = 2048;
 
 			let anchor = 0;
@@ -184,13 +185,7 @@ canvas {
 				applyEdit(start, Math.max(anchor, head), value);
 			}
 
-			function normalizeInput(update: {
-				start: number;
-				end: number;
-				text: string;
-				selectionStart: number;
-				selectionEnd: number;
-			}) {
+			function normalizeInput(update: TextInputUpdate) {
 				return update.start === head - 1 && /^\. ?$/.test(update.text)
 					? { ...update, text: update.text.replace('.', ' ') }
 					: update;
@@ -225,9 +220,32 @@ canvas {
 				return true;
 			}
 
+			function clipboardKey(event: KeyboardEvent) {
+				if (
+					input.kind !== 'edit-context' ||
+					(!event.ctrlKey && !event.metaKey)
+				)
+					return;
+				const key = event.key.toLowerCase();
+				if (
+					(key !== 'c' && key !== 'x' && key !== 'v') ||
+					(key !== 'v' && anchor === head)
+				)
+					return;
+				input.clipboardElement.removeAttribute('aria-hidden');
+				input.clipboardElement.focus({ preventScroll: true });
+			}
+
+			function restoreClipboardFocus() {
+				if (input.clipboardElement === input.element) return;
+				input.clipboardElement.setAttribute('aria-hidden', 'true');
+				input.focus();
+			}
+
 			function moveKey(event: KeyboardEvent) {
 				const extend = event.shiftKey;
 				let next: number | undefined;
+				clipboardKey(event);
 				if (insertKey(event)) return;
 				if ((event.ctrlKey || event.metaKey) && event.key === 'a') {
 					anchor = 0;
@@ -337,15 +355,18 @@ canvas {
 				on(input.element, 'keydown').tap(moveKey),
 				on(input.element, 'copy').tap(event => {
 					copySelection(event);
+					restoreClipboardFocus();
 				}),
 				on(input.element, 'cut').tap(event => {
 					if (copySelection(event)) replaceSelection('');
+					restoreClipboardFocus();
 				}),
-				on(input.element, 'paste').tap(event => {
+				paste.tap(event => {
 					const value = event.clipboardData?.getData('text/plain');
 					if (value === undefined) return;
 					event.preventDefault();
 					replaceSelection(value);
+					restoreClipboardFocus();
 				}),
 				on(host, 'pointerdown').tap(event => {
 					if (event.button !== 0) return;

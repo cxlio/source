@@ -35,7 +35,9 @@ async function createSourceEditor(a: TestApi, value: string) {
 	await a.sleep(75);
 	return {
 		source,
-		target: source.shadowRoot?.querySelector('textarea') ?? source,
+		target: source.editContext
+			? source
+			: (source.shadowRoot?.querySelector('textarea') ?? source),
 	};
 }
 
@@ -172,6 +174,22 @@ export default spec('@cxl/ui.source', a => {
 			await editorAction(a, target, 'type', '!');
 			a.equal(await editorValue(a, target), 'two\nlines!');
 			a.equal(clipboardSelection(target, 'cut'), 'two\nlines!');
+		});
+
+		it.testElement('copy and paste with native keyboard shortcuts', async a => {
+			const { target: source } = await createSourceEditor(a, 'copied text');
+			const { target } = await createSourceEditor(a, '');
+			const clipboardTarget = a.element('textarea');
+			await editorShortcut(a, source, 'Control', 'a');
+			await editorShortcut(a, source, 'Control', 'c');
+			await editorShortcut(a, clipboardTarget, 'Control', 'v');
+			a.equal(clipboardTarget.value, 'copied text', 'copy');
+
+			clipboardTarget.value = 'pasted text';
+			await editorShortcut(a, clipboardTarget, 'Control', 'a');
+			await editorShortcut(a, clipboardTarget, 'Control', 'c');
+			await editorShortcut(a, target, 'Control', 'v');
+			a.equal(await editorValue(a, target), 'pasted text', 'paste');
 		});
 
 		it.testElement('handle native editing and navigation keys', async a => {

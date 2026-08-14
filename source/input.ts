@@ -9,6 +9,7 @@ export interface TextInputUpdate {
 }
 
 export interface TextInput {
+	readonly clipboardElement: HTMLElement;
 	readonly element: HTMLElement;
 	readonly kind: 'edit-context' | 'textarea';
 	readonly updates: Observable<TextInputUpdate>;
@@ -121,14 +122,19 @@ function textareaUpdates(
 
 function createEditContextInput(
 	host: HTMLElement,
+	container: HTMLElement,
 	EditContext: NonNullable<Window['EditContext']>,
 ): TextInput {
 	const context = new EditContext();
+	const clipboardElement = createTextareaElement(container);
+	clipboardElement.tabIndex = -1;
+	clipboardElement.setAttribute('aria-hidden', 'true');
 	let offset = 0;
 	let text = '';
 	host.editContext = context;
 
 	return {
+		clipboardElement,
 		element: host,
 		kind: 'edit-context',
 		updates: editContextUpdates(context).map(event => {
@@ -158,20 +164,26 @@ function createEditContextInput(
 	};
 }
 
-export function createTextareaInput(container: HTMLElement): TextInput {
+function createTextareaElement(container: HTMLElement) {
 	const element = document.createElement('textarea');
 	element.id = 'input';
 	element.autocapitalize = 'off';
 	element.setAttribute('autocorrect', 'off');
 	element.autocomplete = 'off';
-	element.setAttribute('aria-label', 'Source editor');
 	element.spellcheck = false;
 	container.append(element);
+	return element;
+}
+
+export function createTextareaInput(container: HTMLElement): TextInput {
+	const element = createTextareaElement(container);
+	element.setAttribute('aria-label', 'Source editor');
 
 	let offset = 0;
 	let text = '';
 
 	return {
+		clipboardElement: element,
 		element,
 		kind: 'textarea',
 		updates: textareaUpdates(element, () => {
@@ -225,6 +237,6 @@ export function createTextInput(
 ): TextInput {
 	const EditContext = window.EditContext;
 	return EditContext
-		? createEditContextInput(host, EditContext)
+		? createEditContextInput(host, container, EditContext)
 		: createTextareaInput(container);
 }
