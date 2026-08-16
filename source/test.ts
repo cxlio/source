@@ -770,39 +770,26 @@ export default spec('@cxl/ui.source', a => {
 			const tc = createTextCanvas(a);
 			const buffer = new Buffer();
 			const source = createLargeSource();
-			const resetStart = performance.now();
 			buffer.reset(source);
-			const resetDuration = performance.now() - resetStart;
-			const renderStart = performance.now();
 
 			tc.begin(50_000);
 			for (let line = 50_000; line < 50_060; line++)
 				tc.renderLine(line, buffer.getLine(line));
 			tc.commit(0);
 
-			const renderDuration = performance.now() - renderStart;
 			const paintedLines = [...tc.lineCache].filter(
 				line => [...line.lines].length,
 			).length;
-			const scrollStart = performance.now();
 			tc.begin(50_060);
 			for (let line = 50_060; line < 50_120; line++)
 				tc.renderLine(line, buffer.getLine(line));
 			tc.commit(0);
-			const scrollDuration = performance.now() - scrollStart;
 			a.equal(buffer.getLineCount(), LargeLineCount);
 			a.equal(buffer.getLine(99_999), `99999\t${'value'.repeat(8)}`);
 			a.ok(source.length > 4_000_000);
 			a.ok(paintedLines > 0);
 			a.ok(paintedLines < 60);
 			a.equal([...tc.lineCache].length, 120);
-			a.log({
-				fixtureBytes: source.length,
-				paintedLines,
-				renderDuration,
-				resetDuration,
-				scrollDuration,
-			});
 		});
 	});
 });

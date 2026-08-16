@@ -1,0 +1,109 @@
+{
+  "version": 1,
+  "environments": {
+    "bb50e1980696ea81453ee1357456d4fc1a20d355038c9538d12ca52480dc69ea": {
+      "fingerprint": {
+        "browser": "HeadlessChrome/140.0.7339.207",
+        "platform": "darwin",
+        "architecture": "arm64",
+        "cpu": "Apple M4",
+        "gpu": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)), SwiftShader driver-5.0.0)",
+        "profile": "--no-sandbox --disable-setuid-sandbox --disable-gpu --font-render-hinting=none --disable-font-subpixel-positioning --animation-duration-scale=0 --force-device-scale-factor=1 --window-size=1280,1024 --disable-infobars --hide-scrollbars --blink-settings=imagesEnabled=true --enable-font-antialiasing --ignore-certificate-errors --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --mute-audio --disable-extensions"
+      },
+      "benchmarks": {
+        "Source line rendering benchmarks > large-document viewport": {
+          "type": "benchmark",
+          "iterations": 101,
+          "values": [
+            0.5227722767556068,
+            0.5227722767556068,
+            0.5227722791161867,
+            0.5227722767556068,
+            0.5514851489869674,
+            0.5346534653465347,
+            0.5326732668546167,
+            0.5336633649202857,
+            0.5267326737394428,
+            0.5485148524293805,
+            0.8881188123533041,
+            0.500990098065669,
+            0.5138613870828459,
+            0.5207920782636888,
+            0.4891089118353211,
+            0.5118811862303478,
+            0.5079207916070919,
+            0.5247524752475248,
+            0.5198019801980198,
+            0.49603960301616407,
+            0.5138613870828459,
+            0.5158415832141838,
+            0.49504950495049505,
+            0.5118811885909279,
+            0.5198019801980198,
+            0.508910892033341,
+            0.5257425733131937,
+            0.5217821786899378,
+            0.49504950495049505,
+            0.5138613870828459
+          ],
+          "median": 0.5202970292308543,
+          "mad": 0.007425742574257432,
+          "p75": 0.5254950487967764,
+          "p95": 0.5501485155360533,
+          "operationsPerSecond": 1921.979069298708,
+          "options": {
+            "warmup": 250,
+            "sampleTime": 50,
+            "samples": 30
+          }
+        },
+        "Source line rendering benchmarks > wrapped line": {
+          "type": "benchmark",
+          "iterations": 280,
+          "values": [
+            0.18214285714285713,
+            0.17821428520338875,
+            0.18357142891202655,
+            0.177500000170299,
+            0.18321428554398672,
+            0.1767857142857143,
+            0.18107142874172755,
+            0.18249999965940203,
+            0.1864285715988704,
+            0.18392857142857144,
+            0.18071428537368775,
+            0.1878571425165449,
+            0.18214285714285713,
+            0.17857142857142858,
+            0.1739285715988704,
+            0.175,
+            0.17142857142857143,
+            0.17142857142857143,
+            0.17928571445601327,
+            0.1735714282308306,
+            0.1739285715988704,
+            0.17142857142857143,
+            0.1732142857142857,
+            0.17357142908232553,
+            0.16999999965940202,
+            0.17785714268684388,
+            0.17249999982970102,
+            0.1796428578240531,
+            0.1732142857142857,
+            0.1742857141154153
+          ],
+          "median": 0.17767857142857144,
+          "mad": 0.004285714456013265,
+          "p75": 0.18187500004257473,
+          "p95": 0.18530357152223587,
+          "operationsPerSecond": 5628.140703517588,
+          "options": {
+            "warmup": 250,
+            "sampleTime": 50,
+            "samples": 30
+          }
+        }
+      }
+    }
+  }
+}
