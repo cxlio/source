@@ -44,11 +44,11 @@
 		const file = event.target.files?.[0];
 		if (file) {
 			const text = await file.text();
-			source.value = text;
+			source.setText(text);
 		}
 	});
 
 	await fetch('../../source/index.ts')
 		.then(r => r.text())
-		.then(r => (source.value = r));
+		.then(r => source.setText(r));
 </script>

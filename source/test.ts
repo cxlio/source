@@ -231,9 +231,11 @@ export default spec('@cxl/ui.source', a => {
 			a.equal(source.getTokenAt(2), undefined);
 		});
 
-		it.testElement('keeps rendering when a tokenizer throws', async a => {
+		it.testElement('keeps rendering when pasted text breaks a tokenizer', async a => {
 			const { source, target } = await createSourceEditor(a, 'alpha\nbeta');
 			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas');
+			const pasted = new DataTransfer();
+			pasted.setData('text/plain', '!pasted\nsecond');
 			let error = '';
 			const onError = (event: ErrorEvent) => {
 				error = event.error?.message ?? event.message;
@@ -242,7 +244,13 @@ export default spec('@cxl/ui.source', a => {
 			window.addEventListener('error', onError);
 			try {
 				source.tokenizer = failingScanner;
-				await editorAction(a, target, 'type', '!');
+				target.dispatchEvent(
+					new ClipboardEvent('paste', {
+						bubbles: true,
+						cancelable: true,
+						clipboardData: pasted,
+					}),
+				);
 				await a.sleep(20);
 			} finally {
 				window.removeEventListener('error', onError);
@@ -250,7 +258,7 @@ export default spec('@cxl/ui.source', a => {
 
 			a.equal(error, '', 'tokenizer error is contained');
 			a.ok(Boolean(canvas && paintedBounds(canvas)), 'text remains painted');
-			a.equal(source.getText(), '!alpha\nbeta');
+			a.equal(source.getText(), '!pasted\nsecondalpha\nbeta');
 		});
 
 		it.should('apply bounded textarea input changes', a => {

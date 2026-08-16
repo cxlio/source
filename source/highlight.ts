@@ -59,29 +59,35 @@ export class SourceHighlight {
 		let source = '';
 
 		const run = () => {
-			if (!iterator) {
-				source =
-					typeof readSource === 'string' ? readSource : readSource();
-				iterator = tokenize(tokenizer, source);
+			let done = false;
+			try {
+				if (!iterator) {
+					source =
+						typeof readSource === 'string' ? readSource : readSource();
+					iterator = tokenize(tokenizer, source);
+				}
+				const deadline = performance.now() + 4;
+				let result: IteratorResult<SourceToken>;
+				do {
+					result = iterator.next();
+					done = Boolean(result.done);
+					if (result.done) break;
+					const token = result.value;
+					tokens.push(token);
+					this.#bucket(source, lines, token, bucket);
+					if (!committed && token.end >= retain) committed = true;
+				} while (performance.now() < deadline);
+			} catch {
+				done = true;
 			}
-			const deadline = performance.now() + 4;
-			let result: IteratorResult<SourceToken>;
-			do {
-				result = iterator.next();
-				if (result.done) break;
-				const token = result.value;
-				tokens.push(token);
-				this.#bucket(source, lines, token, bucket);
-				if (!committed && token.end >= retain) committed = true;
-			} while (performance.now() < deadline);
 
 			if (version !== this.#version) return;
-			if (committed || result.done) {
+			if (committed || done) {
 				this.#tokens = tokens;
 				this.#lines = lines;
 				this.changed();
 			}
-			if (!result.done)
+			if (!done)
 				this.#frame = requestAnimationFrame(run);
 			else this.#frame = 0;
 		};
