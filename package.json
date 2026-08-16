@@ -5,7 +5,8 @@
 	"homepage": "https://cxlio.github.io/docs/",
 	"devDependencies": {
 		"@cxl/build": "^1.0.0-beta",
-		"@cxl/spec": "^1.0.1",
+		"@cxl/gbc.sdk": "file:../gbc/dist/sdk",
+		"@cxl/spec": "^1.1.0",
 		"@cxl/ui": "^6.0.0-beta.3"
 	},
 	"type": "module",

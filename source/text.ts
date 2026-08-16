@@ -1,5 +1,9 @@
 import { create } from '@cxl/ui';
 import { Cache } from './cache.js';
+import {
+	type SourceTokenColors,
+	type SourceTokenSpan,
+} from './highlight.js';
 
 export interface Character {
 	x: number;
@@ -23,6 +27,7 @@ type SubLine = {
 
 export type SourceLine = {
 	lines: Cache<number, SubLine>;
+	tokens: readonly SourceTokenSpan[];
 	width: number;
 	height: number;
 	text: string;
@@ -248,6 +253,7 @@ export function textCanvas(host: HTMLElement) {
 
 		return lineCache.set(row, {
 			lines,
+			tokens: [],
 			height: measureElement.offsetHeight,
 			width: measureElement.offsetWidth,
 			text,
@@ -256,8 +262,13 @@ export function textCanvas(host: HTMLElement) {
 		});
 	}
 
-	function renderLine(row: number, text: string) {
+	function renderLine(
+		row: number,
+		text: string,
+		tokens: readonly SourceTokenSpan[] = [],
+	) {
 		const line = measure(text, row);
+		line.tokens = tokens;
 		const offsetTop = y;
 		line.offsetTop = offsetTop;
 		toRender.push(line);
@@ -292,12 +303,58 @@ export function textCanvas(host: HTMLElement) {
 		hasResized = false;
 	}
 
-	function commitLine(line: SubLine, y: number) {
+	function paint(text: string, x: number, y: number, kind?: string) {
+		ctx.fillStyle =
+			!forcedColors && kind ? (tokenColors[kind] ?? color) : color;
+		ctx.fillText(text, x, y);
+	}
+
+	function commitLine(sourceLine: SourceLine, line: SubLine, y: number) {
+		const baseline = y + line.y + line.baseline;
 		if (line.hasTabs) {
+			let token = 0;
 			for (const [i, c] of line.chars.entries()) {
-				ctx.fillText(line.text.charAt(i), c.x, y + c.y + line.baseline);
+				const index = line.startIndex + i;
+				let span = sourceLine.tokens.at(token);
+				while (span && index >= span.end)
+					span = sourceLine.tokens.at(++token);
+				paint(
+					line.text.charAt(i),
+					c.x,
+					y + c.y + line.baseline,
+					span && index >= span.start ? span.kind : undefined,
+				);
 			}
-		} else ctx.fillText(line.text, 0, y + line.y + line.baseline);
+			return;
+		}
+
+		let start = line.startIndex;
+		const end = line.endIndex + 1;
+		for (const token of sourceLine.tokens) {
+			if (token.end <= start) continue;
+			if (token.start >= end) break;
+			const tokenStart = Math.max(start, token.start);
+			if (tokenStart > start)
+				paint(
+					sourceLine.text.slice(start, tokenStart),
+					getCharacterX(line, start),
+					baseline,
+				);
+			const tokenEnd = Math.min(end, token.end);
+			paint(
+				sourceLine.text.slice(tokenStart, tokenEnd),
+				getCharacterX(line, tokenStart),
+				baseline,
+				token.kind,
+			);
+			start = tokenEnd;
+		}
+		if (start < end)
+			paint(
+				sourceLine.text.slice(start, end),
+				getCharacterX(line, start),
+				baseline,
+			);
 	}
 
 	function commit(offset: number) {
@@ -310,7 +367,7 @@ export function textCanvas(host: HTMLElement) {
 		for (const row of toRender) {
 			const lines = getVisibleSubLines(row, -offset);
 			offset = 0;
-			if (lines) for (const line of lines) commitLine(line, y);
+			if (lines) for (const line of lines) commitLine(row, line, y);
 			y += row.height;
 			if (y > maxHeight) break;
 		}
@@ -406,10 +463,16 @@ export function textCanvas(host: HTMLElement) {
 		lineCache.clear();
 	}
 
+	function setTokenColors(colors: SourceTokenColors) {
+		tokenColors = colors;
+	}
+
 	function updateStyles() {
 		const style = getComputedStyle(host);
 		ctx.font = style.font;
-		ctx.fillStyle = style.color;
+		color = style.color;
+		forcedColors = matchMedia('(forced-colors: active)').matches;
+		ctx.fillStyle = color;
 		ctx.textBaseline = 'alphabetic';
 	}
 
@@ -425,6 +488,9 @@ export function textCanvas(host: HTMLElement) {
 	let firstVisibleLine = 0;
 	let hasResized = true;
 	let offsetY = 0;
+	let color = '';
+	let forcedColors = false;
+	let tokenColors: SourceTokenColors = {};
 	let hostRect: DOMRect;
 	let measureRect: DOMRect;
 
@@ -437,6 +503,7 @@ export function textCanvas(host: HTMLElement) {
 		invalidate,
 		measureElement,
 		resize,
+		setTokenColors,
 		updateStyles,
 		renderLine,
 		lineCache,

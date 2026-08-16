@@ -5,21 +5,49 @@ import {
 	EMPTY,
 	merge,
 	Component,
-	attribute,
 	component,
 	create,
 	get,
 	css,
+	type Observable,
+	property,
 	onThemeChange,
 	onFontsReady,
 	virtualScroll,
 	ReplaySubject,
+	Subject,
 } from '@cxl/ui';
 import { textCanvas } from './text.js';
 import { sourceCursor } from './cursor.js';
 import { HitTest } from './hit-test.js';
-import { Buffer } from './buffer.js';
+import { Buffer, type BufferChange } from './buffer.js';
 import { createTextInput, type TextInputUpdate } from './input.js';
+import {
+	SourceHighlight,
+	type SourceTokenColors,
+	type SourceTokenizer,
+} from './highlight.js';
+
+export {
+	type SourceToken,
+	type SourceTokenColors,
+	type SourceTokenSpan,
+	type SourceTokenizer,
+} from './highlight.js';
+
+const sourceHighlights = new WeakMap<Source, SourceHighlight>();
+const sourceBuffers = new WeakMap<Source, Buffer>();
+const sourceInitialText = new WeakMap<Source, string>();
+const sourceSetText = new WeakMap<Source, (text: string) => void>();
+const sourceChanges = new WeakMap<Source, Subject<SourceChange>>();
+
+export type SourceChange = BufferChange;
+
+function getChanges(source: Source) {
+	let changes = sourceChanges.get(source);
+	if (!changes) sourceChanges.set(source, (changes = new Subject()));
+	return changes;
+}
 
 /**
  * Displays a large text buffer with incremental editing and viewport rendering.
@@ -31,12 +59,40 @@ import { createTextInput, type TextInputUpdate } from './input.js';
  * @alpha
  */
 export class Source extends Component {
-	value = '';
+	readonly changes: Observable<SourceChange> = getChanges(this);
+	tokenizer?: SourceTokenizer;
+	tokenColors: SourceTokenColors = {};
+
+	getText(start?: number, end?: number) {
+		const buffer = sourceBuffers.get(this);
+		if (!buffer) {
+			const source = sourceInitialText.get(this) ?? '';
+			if (start === undefined) return source;
+			return end === undefined ? source.slice(start) : source.slice(start, end);
+		}
+		if (start === undefined) return buffer.getText();
+		return end === undefined
+			? buffer.getText(start)
+			: buffer.getText(start, end);
+	}
+
+	setText(text: string) {
+		const setText = sourceSetText.get(this);
+		if (setText) setText(text);
+		else sourceInitialText.set(this, text);
+	}
+
+	getTokenAt(index: number) {
+		return sourceHighlights.get(this)?.getTokenAt(index);
+	}
 }
 
 component(Source, {
 	tagName: 'c-source',
-	init: [attribute('value')],
+	init: [
+		property('tokenizer'),
+		property('tokenColors'),
+	],
 	augment: [
 		css(`
 :host {
@@ -87,6 +143,14 @@ canvas {
 			const hitTest = new HitTest(text);
 			const refresh = new ReplaySubject<{ dataLength: number }>(1);
 			const buffer = new Buffer();
+			const changes = getChanges($);
+			const initialText = sourceInitialText.get($) ?? '';
+			sourceInitialText.delete($);
+			sourceBuffers.set($, buffer);
+			const readBuffer = () => buffer.getText();
+			const highlight = new SourceHighlight(() =>
+				refresh.next({ dataLength: buffer.getLineCount() }),
+			);
 			const input = createTextInput($, host);
 			const paste = on(input.element, 'paste');
 			const contextRadius = 2048;
@@ -97,6 +161,7 @@ canvas {
 			let inputStart = 0;
 			let offsetY = 0;
 			let pointerAnchor: number | undefined;
+			sourceHighlights.set($, highlight);
 
 			host.append(text.canvas, cursor.canvas, text.measureElement);
 			$.shadowRoot?.append(host);
@@ -176,8 +241,15 @@ canvas {
 				anchor = clamp(selectionStart);
 				head = clamp(selectionEnd);
 				text.invalidate(change.lineStart, change.lineEnd, change.lineDelta);
+				highlight.reset(
+					readBuffer,
+					$.tokenizer,
+					change.start,
+					change.lineStart,
+				);
 				refresh.next({ dataLength: buffer.getLineCount() });
 				syncInput();
+				changes.next(change);
 			}
 
 			function replaceSelection(value: string) {
@@ -297,6 +369,19 @@ canvas {
 				pointerAnchor = undefined;
 			}
 
+			function resetText(source: string) {
+				buffer.reset(source);
+				anchor = head = Math.min(head, buffer.length);
+				inputEnd = inputStart = 0;
+				text.resize();
+				highlight.reset(source, $.tokenizer);
+				syncInput();
+				refresh.next({ dataLength: buffer.getLineCount() });
+			}
+
+			sourceSetText.set($, resetText);
+			resetText(initialText);
+
 			return merge(
 				onFontsReady().switchMap(() =>
 					onVisibility($).switchMap(visible =>
@@ -321,6 +406,7 @@ canvas {
 											return text.renderLine(
 												index,
 												buffer.getLine(index),
+												highlight.getLine(index),
 											);
 										},
 										dataLength: buffer.getLineCount(),
@@ -334,12 +420,11 @@ canvas {
 							: EMPTY,
 					),
 				),
-				get($, 'value').tap(source => {
-					buffer.reset(source);
-					anchor = head = Math.min(head, buffer.length);
-					inputEnd = inputStart = 0;
-					text.resize();
-					syncInput();
+				get($, 'tokenizer').tap(tokenizer =>
+					highlight.reset(readBuffer, tokenizer),
+				),
+				get($, 'tokenColors').tap(colors => {
+					text.setTokenColors(colors);
 					refresh.next({ dataLength: buffer.getLineCount() });
 				}),
 				input.updates.tap(update => {

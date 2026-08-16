@@ -5,9 +5,12 @@
 	"license": "SEE LICENSE IN LICENSE.md",
 	"browser": "./index.bundle.js",
 	"type": "module",
+	"peerDependencies": {
+		"@cxl/ui": "^6.0.0-beta"
+	},
 	"scripts": {
 		"build": "cxl-build",
-		"test": "npm run build test"
+		"test": "npm run build -- test"
 	},
 	"bugs": "https://github.com/cxlio/source/issues",
 	"homepage": "https://cxlio.github.io/docs/@cxl/ui.source",

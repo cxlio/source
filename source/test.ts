@@ -1,11 +1,51 @@
 import { spec, type TestApi } from '@cxl/spec';
+import {
+	ScannerApi,
+	type Scanner,
+	type Token,
+} from '@cxl/gbc.sdk';
 import { Buffer } from './buffer.js';
-import { Source } from './index.js';
+import { Source, type SourceChange } from './index.js';
 import { createTextareaInput } from './input.js';
 import { HitTest } from './hit-test.js';
+import { SourceHighlight } from './highlight.js';
 import { textCanvas, SourceLine } from './text.js';
 
 const LargeLineCount = 100_000;
+
+type TestTokenKind = 'word' | 'number' | 'eof';
+
+const testScanner: Scanner<Token<TestTokenKind>> = source => {
+	const api = ScannerApi({ source });
+	return {
+		backtrack: api.backtrack,
+		next() {
+			api.skipWhitespace();
+			if (api.eof()) return api.tk('eof', 0);
+			const number = api.current() >= '0' && api.current() <= '9';
+			return api.tk(
+				number ? 'number' : 'word',
+				api.matchWhile(ch =>
+					number
+						? ch >= '0' && ch <= '9'
+						: ch !== ' ' && ch !== '\n',
+				),
+			);
+		},
+	};
+};
+
+const failingScanner: Scanner<Token<TestTokenKind>> = source => {
+	const api = ScannerApi({ source });
+	return {
+		backtrack: api.backtrack,
+		next() {
+			if (api.eof()) return api.tk('eof', 0);
+			if (api.current() === '!') throw new Error('Expected digit');
+			return api.tk('word', 1);
+		},
+	};
+};
 
 function createLargeSource() {
 	return Array.from(
@@ -31,7 +71,7 @@ async function createSourceEditor(a: TestApi, value: string) {
 	const source = a.element(Source);
 	source.style.cssText =
 		'display:block;width:320px;height:160px;font:12px monospace';
-	source.value = value;
+	source.setText(value);
 	await a.sleep(75);
 	return {
 		source,
@@ -96,6 +136,123 @@ async function editorValue(a: TestApi, element: Element) {
 
 export default spec('@cxl/ui.source', a => {
 	a.test('native input', it => {
+		it.testElement('exposes text and compact native changes', async a => {
+			const { source, target } = await createSourceEditor(a, 'alpha');
+			const changes: SourceChange[] = [];
+			const subscription = source.changes.subscribe(change =>
+				changes.push(change),
+			);
+
+			await editorAction(a, target, 'type', 'X');
+
+			a.equal(source.getText(), 'Xalpha');
+			a.equal(source.getText(1, 3), 'al');
+			a.equalValues(changes, [
+				{
+					start: 0,
+					end: 0,
+					text: 'X',
+					removed: '',
+					lineStart: 0,
+					lineEnd: 0,
+					lineDelta: 0,
+				},
+			]);
+			subscription.unsubscribe();
+		});
+
+		it.testElement('emits compact changes for a large document', async a => {
+			const { source, target } = await createSourceEditor(
+				a,
+				createLargeSource(),
+			);
+			const changes: SourceChange[] = [];
+			const subscription = source.changes.subscribe(change =>
+				changes.push(change),
+			);
+
+			await editorAction(a, target, 'type', 'X');
+
+			a.equal(changes.length, 1);
+			a.equal(changes[0].text, 'X');
+			a.equal(changes[0].removed, '');
+			subscription.unsubscribe();
+		});
+
+		it.testElement('defer and coalesce highlighting snapshots', async a => {
+			let source = 'alpha';
+			let snapshots = 0;
+			const highlight = new SourceHighlight(() => undefined);
+			const readSource = () => {
+				snapshots++;
+				return source;
+			};
+
+			highlight.reset(readSource, testScanner);
+			source = 'alpha 12';
+			highlight.reset(readSource, testScanner, 5, 0);
+			a.equal(snapshots, 0, 'snapshot is not built in the edit path');
+
+			await a.sleep(20);
+			a.equal(snapshots, 1, 'rapid edits share the scheduled snapshot');
+			a.equal(highlight.getTokenAt(7)?.kind, 'number');
+		});
+
+		it.testElement('exposes SDK tokenizer results publicly', async a => {
+			const { source } = await createSourceEditor(a, 'alpha 12');
+			source.tokenizer = testScanner;
+			source.tokenColors = {
+				word: '#0d47a1',
+				number: '#e64a19',
+				error: '#b00020',
+			};
+			await a.sleep(20);
+			const word = source.getTokenAt(2);
+			const number = source.getTokenAt(7);
+			a.equalValues(
+				word && {
+					kind: word.kind,
+					start: word.start,
+					end: word.end,
+				},
+				{ kind: 'word', start: 0, end: 5 },
+			);
+			a.equalValues(
+				number && {
+					kind: number.kind,
+					start: number.start,
+					end: number.end,
+				},
+				{ kind: 'number', start: 6, end: 8 },
+			);
+
+			source.tokenizer = undefined;
+			await a.sleep(20);
+			a.equal(source.getTokenAt(2), undefined);
+		});
+
+		it.testElement('keeps rendering when a tokenizer throws', async a => {
+			const { source, target } = await createSourceEditor(a, 'alpha\nbeta');
+			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas');
+			let error = '';
+			const onError = (event: ErrorEvent) => {
+				error = event.error?.message ?? event.message;
+				event.preventDefault();
+			};
+			window.addEventListener('error', onError);
+			try {
+				source.tokenizer = failingScanner;
+				await editorAction(a, target, 'type', '!');
+				await a.sleep(20);
+			} finally {
+				window.removeEventListener('error', onError);
+			}
+
+			a.equal(error, '', 'tokenizer error is contained');
+			a.ok(Boolean(canvas && paintedBounds(canvas)), 'text remains painted');
+			a.equal(source.getText(), '!alpha\nbeta');
+		});
+
 		it.should('apply bounded textarea input changes', a => {
 			const host = a.element('div');
 			const container = document.createElement('div');
