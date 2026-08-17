@@ -455,13 +455,17 @@ export default spec('@cxl/ui.source', a => {
 			const lineHeight =
 				source.shadowRoot?.querySelector<HTMLElement>('#measure')
 					?.offsetHeight ?? 14;
-			const marker = (x: number) => {
+			const marker = (x: number, y = rect.top + lineHeight / 2) => {
 				const element = a.element('div');
-				element.style.cssText = `position:absolute;pointer-events:none;z-index:1000;left:${window.scrollX + x - 1}px;top:${window.scrollY + rect.top + lineHeight / 2 - 1}px;width:2px;height:2px`;
+				element.style.cssText = `position:absolute;pointer-events:none;z-index:1000;left:${window.scrollX + x - 1}px;top:${window.scrollY + y - 1}px;width:2px;height:2px`;
 				return element;
 			};
 			const start = marker(rect.left + 2);
 			const end = marker(rect.left + width);
+			const whitespace = marker(
+				rect.right - 2,
+				rect.top + lineHeight + 10,
+			);
 			const forward = await a.drag(start, end);
 			a.ok(forward.success, forward.message ?? forward.failureMessage);
 			a.equal(clipboardSelection(target), 'ABC');
@@ -469,6 +473,52 @@ export default spec('@cxl/ui.source', a => {
 			const backward = await a.drag(end, start);
 			a.ok(backward.success, backward.message ?? backward.failureMessage);
 			a.equal(clipboardSelection(target), 'ABC');
+
+			const fromWhitespace = await a.drag(whitespace, start);
+			a.ok(
+				fromWhitespace.success,
+				fromWhitespace.message ?? fromWhitespace.failureMessage,
+			);
+			a.equal(clipboardSelection(target), 'ABCDE');
+
+			const toWhitespace = await a.drag(start, whitespace);
+			a.ok(
+				toWhitespace.success,
+				toWhitespace.message ?? toWhitespace.failureMessage,
+			);
+			a.equal(clipboardSelection(target), 'ABCDE');
+		});
+
+		it.testElement('select downward from the left edge', async a => {
+			const source = new Source();
+			source.style.cssText =
+				'display:block;width:320px;height:160px;padding-left:8px;font:12px monospace';
+			source.setText('one\ntwo\nthree');
+			a.dom.append(source);
+			await a.sleep(75);
+			const target = source.editContext
+				? source
+				: (source.shadowRoot?.querySelector('textarea') ?? source);
+			const body = source.shadowRoot?.querySelector<HTMLElement>('#body');
+			const measure = source.shadowRoot?.querySelector<HTMLElement>('#measure');
+			if (!body || !measure) {
+				a.ok(false, 'editor rendering surface exists');
+				return;
+			}
+			const rect = body.getBoundingClientRect();
+			const edge = source.getBoundingClientRect().left + 2;
+			const lineHeight = measure.offsetHeight;
+			const marker = (y: number) => {
+				const element = a.element('div');
+				element.style.cssText = `position:absolute;pointer-events:none;z-index:1000;left:${window.scrollX + edge - 1}px;top:${window.scrollY + y - 1}px;width:2px;height:2px`;
+				return element;
+			};
+			const start = marker(rect.top + lineHeight / 2);
+			const end = marker(rect.top + lineHeight * 2 + lineHeight / 2);
+
+			const selection = await a.drag(start, end);
+			a.ok(selection.success, selection.message ?? selection.failureMessage);
+			a.equal(clipboardSelection(target), 'one\ntwo\n');
 		});
 
 		it.testElement('ignore pointer movement after a context menu', async a => {
@@ -736,6 +786,24 @@ export default spec('@cxl/ui.source', a => {
 				caret.y + caret.height / 2,
 			);
 			a.equalValues(hit?.position, { line: 0, ch: 10 });
+		});
+
+		it.should('hit test whitespace below the final line', a => {
+			const tc = createTextCanvas(a);
+			tc.begin(0);
+			tc.renderLine(0, 'ABC');
+			tc.commit(0);
+			const line = tc.lineCache.get(0);
+			if (!line) {
+				a.ok(false, 'line measured');
+				return;
+			}
+
+			const caret = new HitTest(tc).getCaretAtPosition(
+				tc.canvas.offsetWidth,
+				line.offsetTop + line.height + 10,
+			);
+			a.equalValues(caret?.position, { line: 0, ch: 3 });
 		});
 
 		it.should('paint complete wrapped and tabbed lines', a => {

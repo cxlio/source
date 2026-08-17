@@ -1,4 +1,4 @@
-import type { TextCanvas } from './text.js';
+import type { SourceLine, TextCanvas } from './text.js';
 
 export class HitTest {
 	constructor(protected textCanvas: TextCanvas) {}
@@ -42,10 +42,13 @@ export class HitTest {
 	}
 
 	#getLineAtPosition(y: number) {
+		let previous: SourceLine | undefined;
 		for (let row = this.textCanvas.firstVisibleLine; ; row++) {
 			const sourceLine = this.textCanvas.lineCache.get(row);
-			if (!sourceLine) return;
+			if (!sourceLine)
+				return previous && this.#getBoundaryLine(previous, false);
 			const top = sourceLine.offsetTop;
+			if (y < top) return this.#getBoundaryLine(sourceLine, true);
 			if (y >= top && y < top + sourceLine.height) {
 				const localY = y - top;
 				const part = [...sourceLine.lines].find(
@@ -54,7 +57,18 @@ export class HitTest {
 				);
 				return { part, sourceLine, top };
 			}
-			if (top > this.textCanvas.canvas.offsetHeight) return;
+			previous = sourceLine;
+			if (top > this.textCanvas.canvas.offsetHeight)
+				return this.#getBoundaryLine(sourceLine, false);
 		}
+	}
+
+	#getBoundaryLine(sourceLine: SourceLine, first: boolean) {
+		const parts = [...sourceLine.lines];
+		return {
+			part: parts[first ? 0 : parts.length - 1],
+			sourceLine,
+			top: sourceLine.offsetTop,
+		};
 	}
 }

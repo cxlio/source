@@ -364,8 +364,8 @@ canvas {
 			}
 
 			function stopPointerSelection(event?: PointerEvent) {
-				if (event && host.hasPointerCapture(event.pointerId))
-					host.releasePointerCapture(event.pointerId);
+				if (event && $.hasPointerCapture(event.pointerId))
+					$.releasePointerCapture(event.pointerId);
 				pointerAnchor = undefined;
 			}
 
@@ -453,7 +453,7 @@ canvas {
 					replaceSelection(value);
 					restoreClipboardFocus();
 				}),
-				on(host, 'pointerdown').tap(event => {
+				on($, 'pointerdown').tap(event => {
 					if (event.button !== 0) return;
 					const position = pointerPosition(event);
 					if (position === undefined) return;
@@ -462,11 +462,11 @@ canvas {
 					pointerAnchor = event.shiftKey ? anchor : position;
 					anchor = pointerAnchor;
 					head = position;
-					host.setPointerCapture(event.pointerId);
+					$.setPointerCapture(event.pointerId);
 					syncInput();
 					renderSelection();
 				}),
-				on(host, 'pointermove').tap(event => {
+				on($, 'pointermove').tap(event => {
 					if (pointerAnchor === undefined) return;
 					if (!(event.buttons & 1)) {
 						stopPointerSelection(event);
@@ -479,9 +479,9 @@ canvas {
 					syncInput();
 					renderSelection();
 				}),
-				on(host, 'pointerup').tap(stopPointerSelection),
-				on(host, 'pointercancel').tap(stopPointerSelection),
-				on(host, 'lostpointercapture').tap(() => {
+				on($, 'pointerup').tap(stopPointerSelection),
+				on($, 'pointercancel').tap(stopPointerSelection),
+				on($, 'lostpointercapture').tap(() => {
 					pointerAnchor = undefined;
 				}),
 				onThemeChange.tap(() => {
