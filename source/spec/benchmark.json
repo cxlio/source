@@ -104,6 +104,110 @@
           }
         }
       }
+    },
+    "33732fe3e6b0edd3658d0f6c27f998ba7ac03ac4d0e3793294b0c1878ad6e306": {
+      "fingerprint": {
+        "browser": "Chrome/151.0.7922.108",
+        "platform": "linux",
+        "architecture": "arm64",
+        "cpu": "unknown",
+        "gpu": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)), SwiftShader driver-5.0.0)",
+        "profile": "--no-sandbox --disable-setuid-sandbox --disable-gpu --font-render-hinting=none --disable-font-subpixel-positioning --animation-duration-scale=0 --force-device-scale-factor=1 --window-size=1280,1024 --disable-infobars --hide-scrollbars --blink-settings=imagesEnabled=true --enable-font-antialiasing --ignore-certificate-errors --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --mute-audio --disable-extensions"
+      },
+      "benchmarks": {
+        "Source line rendering benchmarks > large-document viewport": {
+          "type": "benchmark",
+          "iterations": 72,
+          "values": [
+            0.7027777776949935,
+            0.7069444444237484,
+            0.7458333333747255,
+            0.7708333333333334,
+            0.7638888888888888,
+            0.7638888888888888,
+            0.7791666666873627,
+            0.834722222139438,
+            0.7986111111111112,
+            0.7222222222222222,
+            0.7222222222222222,
+            0.7527777778191699,
+            0.8222222222636143,
+            0.7777777777777778,
+            0.7944444444858365,
+            0.5986111111318072,
+            1.1055555554727714,
+            0.5847222222429183,
+            0.5736111111731993,
+            0.6027777777570817,
+            0.5861111110490229,
+            0.6013888889509771,
+            0.573611111069719,
+            0.5958333333126373,
+            0.5666666667287549,
+            0.5902777777777778,
+            0.5708333332505491,
+            0.5680555556383398,
+            0.5916666665838825,
+            0.5694444444444444
+          ],
+          "median": 0.704861111059371,
+          "mad": 0.10486111101797885,
+          "p75": 0.7690972222222222,
+          "p95": 0.8290972221953173,
+          "operationsPerSecond": 1418.7192119268007,
+          "options": {
+            "warmup": 250,
+            "sampleTime": 50,
+            "samples": 30
+          }
+        },
+        "Source line rendering benchmarks > wrapped line": {
+          "type": "benchmark",
+          "iterations": 268,
+          "values": [
+            0.19776119402985073,
+            0.1925373134105953,
+            0.19626865672197805,
+            0.19104477613052326,
+            0.19925373133772345,
+            0.19067164179660492,
+            0.1981343283637691,
+            0.18992537312876823,
+            0.19402985074626866,
+            0.20485074626309657,
+            0.20298507462130555,
+            0.19701492538981474,
+            0.20186567161955052,
+            0.194402985080187,
+            0.1958955223880597,
+            0.1921641791044776,
+            0.18992537312876823,
+            0.19962686567164178,
+            0.1899253731565689,
+            0.19925373133772345,
+            0.19141791043664091,
+            0.19962686567164178,
+            0.1891791044887322,
+            0.19701492536201407,
+            0.1921641791044776,
+            0.1981343283637691,
+            0.19067164179660492,
+            0.1958955223880597,
+            0.19029850746268656,
+            0.1973880596959324
+          ],
+          "median": 0.1958955223880597,
+          "mad": 0.0037313432835820726,
+          "p75": 0.1981343283637691,
+          "p95": 0.20248134327051578,
+          "operationsPerSecond": 5104.761904761905,
+          "options": {
+            "warmup": 250,
+            "sampleTime": 50,
+            "samples": 30
+          }
+        }
+      }
     }
   }
 }

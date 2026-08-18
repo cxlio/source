@@ -5,7 +5,7 @@ import {
 	type Token,
 } from '@cxl/gbc.sdk';
 import { Buffer } from './buffer.js';
-import { Source, type SourceChange } from './index.js';
+import { Code, Source, type SourceChange } from './index.js';
 import { createTextareaInput } from './input.js';
 import { HitTest } from './hit-test.js';
 import { SourceHighlight } from './highlight.js';
@@ -81,6 +81,15 @@ async function createSourceEditor(a: TestApi, value: string) {
 	};
 }
 
+async function createCode(a: TestApi, value: string) {
+	const code = a.element(Code);
+	code.style.cssText =
+		'display:block;width:320px;height:160px;font:12px monospace';
+	code.setText(value);
+	await a.sleep(75);
+	return code;
+}
+
 async function editorAction(
 	a: TestApi,
 	element: Element,
@@ -135,6 +144,40 @@ async function editorValue(a: TestApi, element: Element) {
 }
 
 export default spec('@cxl/ui.source', a => {
+	a.test('code', it => {
+		it.testElement('renders highlighted code without editor controls', async a => {
+			const code = await createCode(a, 'alpha 12');
+			code.tokenizer = testScanner;
+			code.tokenColors = {
+				word: '#0d47a1',
+				number: '#e64a19',
+			};
+			await a.sleep(20);
+
+			a.equal(code.getText(), 'alpha 12');
+			a.equal(code.getTokenAt(7)?.kind, 'number');
+			a.equal(code.shadowRoot?.querySelectorAll('canvas').length, 1);
+			a.equal(code.shadowRoot?.querySelector('textarea'), null);
+			a.equal(code.getAttribute('role'), 'code');
+			await a.a11y(code);
+		});
+
+		it.testElement('keeps large code buffers out of the DOM', async a => {
+			const code = await createCode(a, createLargeSource());
+
+			a.equal(code.getText(0, 6), '0\tvalu');
+			a.ok(!code.shadowRoot?.textContent?.includes('99999'));
+		});
+
+		it.testElement('is the base of the source editor', async a => {
+			const { source } = await createSourceEditor(a, 'alpha');
+
+			a.ok(source instanceof Code);
+			a.equal(source.shadowRoot?.querySelectorAll('canvas').length, 2);
+			a.equal(source.getAttribute('role'), 'textbox');
+		});
+	});
+
 	a.test('native input', it => {
 		it.testElement('exposes text and compact native changes', async a => {
 			const { source, target } = await createSourceEditor(a, 'alpha');
