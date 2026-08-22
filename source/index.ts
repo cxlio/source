@@ -6,6 +6,8 @@ import {
 	component,
 	create,
 	css,
+	get,
+	property,
 	type Observable,
 	onThemeChange,
 	onFontsReady,
@@ -41,6 +43,7 @@ export type SourceChange = BufferChange;
  * @alpha
  */
 export class Source extends Code {
+	fatCursor = false;
 	readonly changes: Observable<SourceChange>;
 	protected readonly changeSubject = new Subject<SourceChange>();
 	protected readonly host = create('div', { id: 'body' });
@@ -51,6 +54,7 @@ export class Source extends Code {
 	static {
 		component(Source, {
 			tagName: 'c-source',
+			init: [property('fatCursor')],
 			augment: [
 				css(`
 :host {
@@ -322,6 +326,10 @@ canvas {
 						focused($).tap(value =>
 							value ? renderSelection() : cursor.hideCaret(),
 						),
+						get($, 'fatCursor').tap(value => {
+							cursor.setOptions({ type: value ? 'block' : 'text' });
+							renderSelection();
+						}),
 						input.updates.tap(update => {
 							update = normalizeInput(update);
 							applyEdit(

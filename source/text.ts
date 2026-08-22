@@ -390,6 +390,12 @@ export function textCanvas(host: HTMLElement) {
 		return line.chars[local].x;
 	}
 
+	function getCharacterWidth(line: SubLine, index: number) {
+		if (!line.chars.length) return 1;
+		const local = index - line.startIndex;
+		return line.chars[Math.min(Math.max(local, 0), line.chars.length - 1)].width;
+	}
+
 	function getCaret({ line, ch }: TextPosition): TextRect | undefined {
 		const sourceLine = lineCache.get(line);
 		if (!sourceLine) return;
@@ -410,7 +416,7 @@ export function textCanvas(host: HTMLElement) {
 		return {
 			x: getCharacterX(part, ch),
 			y: sourceLine.offsetTop + part.y,
-			width: 1,
+			width: getCharacterWidth(part, ch),
 			height: part.height,
 			line,
 		};

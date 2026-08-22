@@ -138,6 +138,26 @@ function paintedBounds(canvas: HTMLCanvasElement, width = canvas.width) {
 	return { top, bottom };
 }
 
+function paintedWidth(canvas: HTMLCanvasElement) {
+	const context = canvas.getContext('2d');
+	if (!context) return 0;
+	const pixels = context.getImageData(
+		0,
+		0,
+		canvas.width,
+		canvas.height,
+	).data;
+	let left = canvas.width;
+	let right = -1;
+	for (let pixel = 0; pixel < pixels.length / 4; pixel++) {
+		if (!pixels[pixel * 4 + 3]) continue;
+		const x = pixel % canvas.width;
+		left = Math.min(left, x);
+		right = Math.max(right, x);
+	}
+	return right < left ? 0 : right - left + 1;
+}
+
 function isPainted(
 	canvas: HTMLCanvasElement,
 	top: number,
@@ -599,6 +619,22 @@ export default spec('@cxl/ui.source', a => {
 
 			await editorAction(a, target, 'type', 'X');
 			a.equal(await editorValue(a, target), 'aXlpha', 'caret position preserved');
+		});
+
+		it.testElement('supports a fat cursor', async a => {
+			const { source, target } = await createSourceEditor(a, 'alpha');
+			const canvas = source.shadowRoot?.querySelectorAll('canvas')[1];
+			if (!(canvas instanceof HTMLCanvasElement)) {
+				a.ok(false, 'caret canvas exists');
+				return;
+			}
+
+			await editorAction(a, target, 'press', 'ArrowRight');
+			const thinWidth = paintedWidth(canvas);
+			source.fatCursor = true;
+			await a.sleep(20);
+
+			a.ok(paintedWidth(canvas) > thinWidth, 'fat cursor spans the character');
 		});
 
 		it.testElement('extend and collapse multiline keyboard selections', async a => {
