@@ -1,6 +1,7 @@
 import {
 	on,
 	onResize,
+	focused,
 	merge,
 	component,
 	create,
@@ -146,7 +147,7 @@ canvas {
 							$.offsetY,
 						);
 						const caret = text.getCaret(buffer.positionAt(head));
-						if (caret) {
+						if (caret && $.matches(':focus-within')) {
 							cursor.setPosition(caret, $.offsetY);
 							input.setBounds(cursor.bounds);
 						} else cursor.hideCaret();
@@ -318,6 +319,9 @@ canvas {
 
 					return merge(
 						onResize(host).raf(() => cursor.resize()),
+						focused($).tap(value =>
+							value ? renderSelection() : cursor.hideCaret(),
+						),
 						input.updates.tap(update => {
 							update = normalizeInput(update);
 							applyEdit(

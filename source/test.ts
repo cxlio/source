@@ -581,6 +581,26 @@ export default spec('@cxl/ui.source', a => {
 			a.equalValues(edited, initial, 'first edit keeps painted text fixed');
 		});
 
+		it.testElement('only paints the caret while focused', async a => {
+			const { source, target } = await createSourceEditor(a, 'alpha');
+			const canvas = source.shadowRoot?.querySelectorAll('canvas')[1];
+			if (!(canvas instanceof HTMLCanvasElement)) {
+				a.ok(false, 'caret canvas exists');
+				return;
+			}
+
+			a.ok(!isPainted(canvas, 0, canvas.height), 'caret hidden before focus');
+			await editorAction(a, target, 'press', 'ArrowRight');
+			a.ok(isPainted(canvas, 0, canvas.height), 'caret painted while focused');
+
+			a.element('textarea').focus();
+			await a.sleep(20);
+			a.ok(!isPainted(canvas, 0, canvas.height), 'caret hidden after blur');
+
+			await editorAction(a, target, 'type', 'X');
+			a.equal(await editorValue(a, target), 'aXlpha', 'caret position preserved');
+		});
+
 		it.testElement('extend and collapse multiline keyboard selections', async a => {
 			const { target } = await createSourceEditor(a, 'one\ntwo\nthree');
 			await editorAction(a, target, 'press', 'ArrowDown');
