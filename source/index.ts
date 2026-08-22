@@ -3,11 +3,16 @@ import {
 	onResize,
 	merge,
 	component,
+	create,
 	css,
 	type Observable,
 	onThemeChange,
+	onFontsReady,
+	virtualScroll,
+	ReplaySubject,
 	Subject,
 } from '@cxl/ui';
+import { textCanvas } from './text.js';
 import { sourceCursor } from './cursor.js';
 import { HitTest } from './hit-test.js';
 import { type BufferChange } from './buffer.js';
@@ -37,6 +42,10 @@ export type SourceChange = BufferChange;
 export class Source extends Code {
 	readonly changes: Observable<SourceChange>;
 	protected readonly changeSubject = new Subject<SourceChange>();
+	protected readonly host = create('div', { id: 'body' });
+	protected offsetY = 0;
+	protected readonly refresh = new ReplaySubject<{ dataLength: number }>(1);
+	protected readonly text = textCanvas(this.host);
 
 	static {
 		component(Source, {
@@ -46,6 +55,7 @@ export class Source extends Code {
 :host {
 	cursor: text;
 	outline: none;
+	position: relative;
 	user-select: none;
 	-webkit-user-select: none;
 }
@@ -53,6 +63,21 @@ export class Source extends Code {
 :host(:focus-within) {
 	outline: 2px solid Highlight;
 	outline-offset: 2px;
+}
+canvas {
+	position: absolute; top: 0; left: 0;
+	pointer-events: none;
+	width:100%;
+	height:100%;
+}
+#body { height:100%; }
+#measure {
+	visibility:hidden;
+	position: absolute;
+	top: 0; left: 0;
+	width: 100%;
+	white-space: pre-wrap;
+	word-break: break-word;
 }
 #input {
 	position: fixed;
@@ -362,6 +387,71 @@ export class Source extends Code {
 	constructor() {
 		super();
 		this.changes = this.changeSubject;
+	}
+
+	protected override initializeRenderer() {
+		const { host, refresh, text } = this;
+		host.append(text.canvas, text.measureElement);
+		this.shadowRoot?.append(host);
+		refresh.next({ dataLength: this.buffer.getLineCount() });
+
+		return merge(
+			onFontsReady().switchMap(() =>
+				merge(
+					onResize(host).raf(() => {
+						if (host.clientHeight > 0 && host.clientWidth > 0)
+							text.resize();
+					}),
+					virtualScroll({
+						host,
+						scrollElement: this,
+						scrollContainer: this.shadowRoot ?? undefined,
+						refresh,
+						render: (index, order) => {
+							if (order === 0) text.begin(index);
+							return text.renderLine(
+								index,
+								this.buffer.getLine(index),
+								this.highlight.getLine(index),
+							);
+						},
+						dataLength: this.buffer.getLineCount(),
+						translate: false,
+					}).tap(event => {
+						this.offsetY = event.offset;
+						text.commit(event.offset);
+						this.rendered();
+					}),
+				),
+			),
+			onThemeChange.tap(() => {
+				text.updateStyles();
+				refresh.next({ dataLength: this.buffer.getLineCount() });
+			}),
+		);
+	}
+
+	protected override resetRenderer() {
+		this.text.resize();
+		this.refresh.next({ dataLength: this.buffer.getLineCount() });
+	}
+
+	protected override replaced(change: BufferChange) {
+		this.text.invalidate(
+			change.lineStart,
+			change.lineEnd,
+			change.lineDelta,
+		);
+		this.refresh.next({ dataLength: this.buffer.getLineCount() });
+	}
+
+	protected override highlighted() {
+		this.refresh.next({ dataLength: this.buffer.getLineCount() });
+	}
+
+	protected override colorsChanged() {
+		this.text.setTokenColors(this.tokenColors);
+		this.refresh.next({ dataLength: this.buffer.getLineCount() });
 	}
 
 	protected override rendered() {}

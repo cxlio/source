@@ -30,7 +30,12 @@ export class SourceHighlight {
 	#tokens: SourceToken[] = [];
 	#version = 0;
 
-	constructor(private readonly changed: () => void) {}
+	constructor(
+		private readonly changed: (
+			done: boolean,
+			tokens: readonly SourceToken[],
+		) => void,
+	) {}
 
 	reset(
 		readSource: SourceReader,
@@ -47,7 +52,7 @@ export class SourceHighlight {
 		if (!tokenizer) {
 			this.#tokens = [];
 			this.#lines.clear();
-			this.changed();
+			this.changed(true, this.#tokens);
 			return;
 		}
 
@@ -85,7 +90,7 @@ export class SourceHighlight {
 			if (committed || done) {
 				this.#tokens = tokens;
 				this.#lines = lines;
-				this.changed();
+				this.changed(done, this.#tokens);
 			}
 			if (!done)
 				this.#frame = requestAnimationFrame(run);

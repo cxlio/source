@@ -138,6 +138,24 @@ function paintedBounds(canvas: HTMLCanvasElement, width = canvas.width) {
 	return { top, bottom };
 }
 
+function isPainted(
+	canvas: HTMLCanvasElement,
+	top: number,
+	bottom: number,
+) {
+	const context = canvas.getContext('2d');
+	if (!context) return false;
+	const pixels = context.getImageData(
+		0,
+		top,
+		canvas.width,
+		bottom - top,
+	).data;
+	for (let index = 3; index < pixels.length; index += 4)
+		if (pixels[index]) return true;
+	return false;
+}
+
 async function editorValue(a: TestApi, element: Element) {
 	await editorShortcut(a, element, 'Control', 'a');
 	return clipboardSelection(element);
@@ -145,6 +163,39 @@ async function editorValue(a: TestApi, element: Element) {
 
 export default spec('@cxl/ui.source', a => {
 	a.test('code', it => {
+		it.testElement('supports native pointer selection', async a => {
+			const code = await createCode(a, 'one\ntwo\nthree');
+			const content = code.shadowRoot?.querySelector('pre');
+			const text = content?.querySelector('code')?.firstChild;
+			if (!content || !text) {
+				a.ok(false, 'code exposes selectable HTML text');
+				return;
+			}
+			const characterRect = (index: number) => {
+				const range = document.createRange();
+				range.setStart(text, index);
+				range.setEnd(text, index + 1);
+				return range.getBoundingClientRect();
+			};
+			const marker = (rect: DOMRect) => {
+				const element = a.element('div');
+				element.style.cssText = `position:absolute;pointer-events:none;z-index:1000;left:${window.scrollX + rect.left}px;top:${window.scrollY + rect.top + rect.height / 2}px;width:1px;height:1px`;
+				return element;
+			};
+
+			const selection = await a.drag(
+				marker(characterRect(0)),
+				marker(characterRect(8)),
+			);
+			a.ok(selection.success, selection.message ?? selection.failureMessage);
+			a.equal(document.getSelection()?.toString(), 'one\ntwo\n');
+			const clipboardTarget = a.element('textarea');
+			await editorShortcut(a, document.body, 'Control', 'c');
+			await editorShortcut(a, clipboardTarget, 'Control', 'v');
+			a.equal(clipboardTarget.value, 'one\ntwo\n');
+			a.equal(code.tabIndex, -1);
+		});
+
 		it.testElement('renders highlighted code without editor controls', async a => {
 			const code = await createCode(a, 'alpha 12');
 			code.tokenizer = testScanner;
@@ -156,17 +207,21 @@ export default spec('@cxl/ui.source', a => {
 
 			a.equal(code.getText(), 'alpha 12');
 			a.equal(code.getTokenAt(7)?.kind, 'number');
-			a.equal(code.shadowRoot?.querySelectorAll('canvas').length, 1);
+			a.equal(code.shadowRoot?.querySelectorAll('canvas').length, 0);
+			a.equal(code.shadowRoot?.querySelectorAll('span').length, 2);
+			a.equal(code.shadowRoot?.querySelector('code')?.textContent, 'alpha 12');
 			a.equal(code.shadowRoot?.querySelector('textarea'), null);
 			a.equal(code.getAttribute('role'), 'code');
 			await a.a11y(code);
 		});
 
-		it.testElement('keeps large code buffers out of the DOM', async a => {
+		it.testElement('renders unhighlighted buffers as one text node', async a => {
 			const code = await createCode(a, createLargeSource());
+			const content = code.shadowRoot?.querySelector('code');
 
 			a.equal(code.getText(0, 6), '0\tvalu');
-			a.ok(!code.shadowRoot?.textContent?.includes('99999'));
+			a.equal(content?.childNodes.length, 1);
+			a.ok(Boolean(content?.textContent?.includes('99999')));
 		});
 
 		it.testElement('is the base of the source editor', async a => {
@@ -179,6 +234,70 @@ export default spec('@cxl/ui.source', a => {
 	});
 
 	a.test('native input', it => {
+		it.testElement('renders text set before connection after editing', async a => {
+			const container = a.element('div');
+			container.style.cssText =
+				'display:flex;box-sizing:border-box;min-height:360px;padding:16px;width:100%';
+			const source = new Source();
+			const value = `main {\n\t'Hello World' >> out\n}`;
+			source.style.cssText =
+				'flex:1;font:14px/20px monospace;tab-size:4';
+			source.setText(value);
+			source.tokenizer = testScanner;
+			container.append(source);
+			container.scrollIntoView({ block: 'center' });
+			await a.sleep(75);
+			a.ok(
+				source.getBoundingClientRect().top < window.innerHeight,
+				'source renders while visible',
+			);
+			container.style.marginTop = `${window.innerHeight * 2}px`;
+			window.scrollTo(0, 0);
+			await a.sleep(75);
+			a.ok(
+				source.getBoundingClientRect().top > window.innerHeight,
+				'source leaves the viewport',
+			);
+			source.scrollIntoView({ block: 'center' });
+
+			const target = source.editContext
+				? source
+				: (source.shadowRoot?.querySelector('textarea') ?? source);
+			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>(
+				'canvas',
+			);
+			const body = source.shadowRoot?.querySelector<HTMLElement>('#body');
+			const measure = source.shadowRoot?.querySelector<HTMLElement>('#measure');
+			if (!body || !canvas || !measure) {
+				a.ok(false, 'editor rendering surface exists');
+				return;
+			}
+			const lineHeight = measure.offsetHeight;
+			const rect = body.getBoundingClientRect();
+			const marker = a.element('div');
+			marker.style.cssText = `position:absolute;pointer-events:none;z-index:1000;left:${window.scrollX + rect.left + 80}px;top:${window.scrollY + rect.top + lineHeight * 1.5}px;width:1px;height:1px`;
+			const click = await a.tap(marker);
+			a.ok(click.success, click.message ?? click.failureMessage);
+			await editorAction(a, target, 'press', 'Enter');
+			await a.sleep(75);
+
+			const editedLines = source.getText().split('\n');
+			a.ok(
+				editedLines.every(Boolean),
+				'returning click moves the caret before editing',
+			);
+			for (let line = 0; line < 4; line++)
+				a.ok(
+					isPainted(
+						canvas,
+						line * lineHeight,
+						(line + 1) * lineHeight,
+					),
+					`line ${line + 1} remains painted`,
+				);
+			a.equal(editedLines.length, 4);
+		});
+
 		it.testElement('exposes text and compact native changes', async a => {
 			const { source, target } = await createSourceEditor(a, 'alpha');
 			const changes: SourceChange[] = [];

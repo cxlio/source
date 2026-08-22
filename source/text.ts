@@ -166,6 +166,11 @@ export function textCanvas(host: HTMLElement) {
 		row: number,
 		lineIndex: number,
 	) {
+		if (!measurementReady) {
+			hostRect = host.getBoundingClientRect();
+			measureRect = measureElement.getBoundingClientRect();
+			measurementReady = true;
+		}
 		let lineY = -1;
 		let lineHeight = 0;
 		let hasTabs = false;
@@ -300,6 +305,7 @@ export function textCanvas(host: HTMLElement) {
 		} else ctx.clearRect(0, 0, canvas.width, canvas.height);
 		hostRect = host.getBoundingClientRect();
 		measureRect = measureElement.getBoundingClientRect();
+		measurementReady = true;
 		hasResized = false;
 	}
 
@@ -359,6 +365,7 @@ export function textCanvas(host: HTMLElement) {
 
 	function commit(offset: number) {
 		let y = (offsetY = offset);
+		measurementReady = false;
 		if (hasResized) resizeCanvas();
 		else ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -487,6 +494,7 @@ export function textCanvas(host: HTMLElement) {
 	let y = 0;
 	let firstVisibleLine = 0;
 	let hasResized = true;
+	let measurementReady = false;
 	let offsetY = 0;
 	let color = '';
 	let forcedColors = false;

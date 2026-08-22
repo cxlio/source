@@ -1,14 +1,16 @@
 import { spec, type TestApi } from '@cxl/spec';
 import { Buffer } from './buffer.js';
+import { Code } from './code.js';
 import { textCanvas } from './text.js';
 
 const LineCount = 100_000;
+const HtmlLineCount = 10_000;
 const ViewportLineCount = 60;
 const benchmarkOptions = { warmup: 250, sampleTime: 50, samples: 30 };
 
-function createLargeSource() {
+function createLargeSource(lineCount = LineCount) {
 	return Array.from(
-		{ length: LineCount },
+		{ length: lineCount },
 		(_, line) => `${line}\t${'value'.repeat(8)}`,
 	).join('\n');
 }
@@ -27,6 +29,19 @@ function createTextCanvas(a: TestApi, width = 320) {
 }
 
 export default spec('Source line rendering benchmarks', s => {
+	s.test('large-document html', async a => {
+		const code = a.element(Code);
+		const source = createLargeSource(HtmlLineCount);
+		code.style.cssText =
+			'display:block;width:320px;height:160px;font:12px monospace';
+		code.setText(source);
+
+		await a.benchmark(() => {
+			code.setText(source);
+			return code.shadowRoot?.querySelector('pre')?.offsetHeight ?? 0;
+		}, benchmarkOptions);
+	});
+
 	s.test('large-document viewport', async a => {
 		const text = createTextCanvas(a);
 		const buffer = new Buffer();
