@@ -18,7 +18,7 @@ import {
 import { textCanvas } from './text.js';
 import { sourceCursor } from './cursor.js';
 import { HitTest } from './hit-test.js';
-import { type BufferChange } from './buffer.js';
+import { type BufferChange, type BufferPosition } from './buffer.js';
 import { createTextInput, type TextInputUpdate } from './input.js';
 import { Code } from './code.js';
 
@@ -32,6 +32,7 @@ export {
 } from './highlight.js';
 
 export type SourceChange = BufferChange;
+export type SourcePosition = BufferPosition;
 
 export interface SourceRange {
 	readonly start: number;
@@ -47,9 +48,45 @@ export interface SourceEditFeature {
 	replace(value: string, range?: SourceRange): SourceChange;
 }
 
+export interface SourceCursorFeature {
+	readonly index: number;
+	go(index: number): void;
+	indexAt(position: SourcePosition): number;
+	position(index?: number): SourcePosition;
+	range(from?: number, to?: number): SourceRange;
+}
+
 export interface SourceHistoryFeature {
 	undo(): void;
 	redo(): void;
+}
+
+export interface SourceSearchOptions {
+	reverse?: boolean;
+	caseSensitive?: boolean;
+}
+
+export interface SourceSearchFeature {
+	lastSearch?: string | RegExp;
+	lastOptions?: SourceSearchOptions;
+	lastReplace?: string;
+	find(
+		query?: string | RegExp,
+		options?: SourceSearchOptions,
+	): SourceRange | undefined;
+	findAll(query?: string | RegExp, options?: SourceSearchOptions): SourceRange[];
+	findNext(): SourceRange | undefined;
+	findPrevious(): SourceRange | undefined;
+	replaceNext(
+		query?: string | RegExp,
+		value?: string,
+		options?: SourceSearchOptions,
+	): void;
+	replaceAll(
+		query?: string | RegExp,
+		value?: string,
+		options?: SourceSearchOptions,
+	): void;
 }
 
 interface SelectionSnapshot {
@@ -63,8 +100,44 @@ interface HistoryRecord {
 	after: SelectionSnapshot;
 }
 
+interface ActiveSearch {
+	query: string | RegExp;
+	caseSensitive?: boolean;
+	range: SourceRange;
+}
+
 const MaxHistoryEntries = 1_000;
 const MaxHistoryText = 16 * 1024 * 1024;
+
+function* searchMatches(
+	value: string,
+	query: string | RegExp,
+	caseSensitive?: boolean,
+): Generator<SourceRange> {
+	if (typeof query === 'string') {
+		if (!query) return;
+		query = new RegExp(
+			query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+			caseSensitive ? '' : 'i',
+		);
+	}
+
+	let flags = query.flags.replace(/[gy]/g, '');
+	if (caseSensitive === true) flags = flags.replace(/i/g, '');
+	else if (caseSensitive === false && !flags.includes('i')) flags += 'i';
+	const expression = new RegExp(query.source, `${flags}g`);
+	let match = expression.exec(value);
+	while (match) {
+		yield { start: match.index, end: match.index + match[0].length };
+		if (!match[0]) {
+			const codePoint = value.codePointAt(expression.lastIndex);
+			expression.lastIndex += expression.unicode && (codePoint ?? 0) > 0xffff
+				? 2
+				: 1;
+		}
+		match = expression.exec(value);
+	}
+}
 
 /**
  * Displays a large text buffer with incremental editing and viewport rendering.
@@ -78,6 +151,22 @@ const MaxHistoryText = 16 * 1024 * 1024;
 export class Source extends Code {
 	fatCursor = false;
 	readonly changes: Observable<SourceChange>;
+	readonly cursor: SourceCursorFeature = (() => {
+		const source = this;
+		return {
+			get index() {
+				return source.selectionHead;
+			},
+			go: index => source.selection.set(index),
+			indexAt: position => source.buffer.indexAt(position),
+			position: (index = source.selectionHead) =>
+				source.buffer.positionAt(source.clampSelection(index)),
+			range: (from = source.selectionHead, to = from) => ({
+				start: source.clampSelection(Math.min(from, to)),
+				end: source.clampSelection(Math.max(from, to)),
+			}),
+		};
+	})();
 	readonly selection: SourceSelectionFeature = {
 		range: () => ({
 			start: Math.min(this.selectionAnchor, this.selectionHead),
@@ -126,6 +215,45 @@ export class Source extends Code {
 			);
 		},
 	};
+	readonly search: SourceSearchFeature = {
+		find: (query = this.search.lastSearch, options = this.search.lastOptions) =>
+			this.findSearch(query, options),
+		findAll: (
+			query = this.search.lastSearch,
+			options = this.search.lastOptions,
+		) => this.findAllSearch(query, options),
+		findNext: () =>
+			this.findSearch(this.search.lastSearch, {
+				...this.search.lastOptions,
+				reverse: false,
+			}),
+		findPrevious: () =>
+			this.findSearch(this.search.lastSearch, {
+				...this.search.lastOptions,
+				reverse: true,
+			}),
+		replaceNext: (
+			query = this.search.lastSearch,
+			value = this.search.lastReplace,
+			options = this.search.lastOptions,
+		) => {
+			if (value === undefined) return;
+			this.search.lastReplace = value;
+			const range = this.findSearch(query, options);
+			if (range) this.edit.replace(value, range);
+		},
+		replaceAll: (
+			query = this.search.lastSearch,
+			value = this.search.lastReplace,
+			options = this.search.lastOptions,
+		) => {
+			if (value === undefined) return;
+			this.search.lastReplace = value;
+			const ranges = this.findAllSearch(query, options).reverse();
+			for (const range of ranges) this.edit.replace(value, range);
+		},
+	};
+	protected activeSearch?: ActiveSearch;
 	protected readonly changeSubject = new Subject<SourceChange>();
 	protected readonly host = create('div', { id: 'body' });
 	protected offsetY = 0;
@@ -510,6 +638,67 @@ canvas {
 		this.undoSize = 0;
 	}
 
+	protected findAllSearch(
+		query: string | RegExp | undefined,
+		options: SourceSearchOptions = {},
+	) {
+		if (query === undefined) return [];
+		this.search.lastSearch = query;
+		this.search.lastOptions = { ...options };
+		return [...searchMatches(this.getText(), query, options.caseSensitive)];
+	}
+
+	protected findSearch(
+		query: string | RegExp | undefined,
+		options: SourceSearchOptions = {},
+	) {
+		if (query === undefined) return;
+		const current = this.selection.range();
+		const active = this.activeSearch;
+		const reverse = options.reverse ?? false;
+		let boundary = reverse ? current.start : current.end;
+		if (
+			active?.query === query &&
+			active.caseSensitive === options.caseSensitive &&
+			active.range.start === current.start &&
+			active.range.end === current.end &&
+			current.start === current.end
+		)
+			boundary += reverse ? -1 : 1;
+
+		let first: SourceRange | undefined;
+		let last: SourceRange | undefined;
+		let match: SourceRange | undefined;
+		for (const range of searchMatches(
+			this.getText(),
+			query,
+			options.caseSensitive,
+		)) {
+			first ??= range;
+			last = range;
+			if (reverse) {
+				if (range.end <= boundary) match = range;
+			} else if (range.start >= boundary) {
+				match = range;
+				break;
+			}
+		}
+		match ??= reverse ? last : first;
+		this.search.lastSearch = query;
+		this.search.lastOptions = { ...options };
+		if (!match) {
+			this.selection.set(this.cursor.index);
+			return;
+		}
+		this.selection.set(match.start, match.end);
+		this.activeSearch = {
+			query,
+			caseSensitive: options.caseSensitive,
+			range: match,
+		};
+		return match;
+	}
+
 	protected historyRecordSize(record: HistoryRecord) {
 		return record.change.text.length + record.change.removed.length;
 	}
@@ -550,6 +739,7 @@ canvas {
 	}
 
 	protected setSelectionState(anchor: number, head: number, scroll: boolean) {
+		this.activeSearch = undefined;
 		this.selectionAnchor = this.clampSelection(anchor);
 		this.selectionHead = this.clampSelection(head);
 		this.selectionSync?.(scroll);

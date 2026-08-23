@@ -9,7 +9,7 @@ const HtmlLineCount = 10_000;
 const HistoryLineCount = 10_000;
 const ViewportLineCount = 60;
 const benchmarkOptions = { warmup: 250, sampleTime: 50, samples: 30 };
-const historyBenchmarkOptions = { warmup: 20, sampleTime: 20, samples: 10 };
+const featureBenchmarkOptions = { warmup: 20, sampleTime: 20, samples: 10 };
 
 function createLargeSource(lineCount = LineCount) {
 	return Array.from(
@@ -77,7 +77,17 @@ export default spec('Source line rendering benchmarks', s => {
 			source.edit.replace('x', { start: index, end: index + 1 });
 			source.history.undo();
 			return source.selection.range().start;
-		}, historyBenchmarkOptions);
+		}, featureBenchmarkOptions);
+	});
+
+	s.test('large-document search', async a => {
+		const source = new Source();
+		source.setText(createLargeSource());
+
+		await a.benchmark(
+			() => source.search.findAll('missing value').length,
+			featureBenchmarkOptions,
+		);
 	});
 
 	s.test('wrapped line', async a => {

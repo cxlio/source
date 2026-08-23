@@ -363,6 +363,72 @@ export default spec('@cxl/ui.source', a => {
 			});
 		});
 
+		it.testElement('navigates the public cursor by index and position', async a => {
+			const { source } = await createSourceEditor(a, 'one\ntwo\nthree');
+			const cursor: {
+				readonly index: number;
+				go(index: number): void;
+				range(from?: number, to?: number): { start: number; end: number };
+			} = source.cursor;
+
+			cursor.go(6);
+			a.equal(cursor.index, 6);
+			a.equalValues(cursor.range(), { start: 6, end: 6 });
+			a.equalValues(cursor.range(6, 2), { start: 2, end: 6 });
+			a.equalValues(source.cursor.position(), { line: 1, ch: 2 });
+			a.equal(source.cursor.indexAt({ line: 2, ch: 3 }), 11);
+
+			cursor.go(Infinity);
+			a.equal(cursor.index, source.getText().length);
+		});
+
+		it.testElement('finds strings with direction wrap and case options', async a => {
+			const { source } = await createSourceEditor(
+				a,
+				'Alpha alpha beta ALPHA',
+			);
+
+			a.equalValues(source.search.find('alpha'), { start: 0, end: 5 });
+			a.equalValues(source.selection.range(), { start: 0, end: 5 });
+			a.equalValues(source.search.findNext(), { start: 6, end: 11 });
+			a.equalValues(source.search.findPrevious(), { start: 0, end: 5 });
+			a.equalValues(
+				source.search.findAll('Alpha', { caseSensitive: true }),
+				[{ start: 0, end: 5 }],
+			);
+
+			source.cursor.go(0);
+			a.equalValues(
+				source.search.find('alpha', { reverse: true }),
+				{ start: 17, end: 22 },
+				'reverse search wraps',
+			);
+		});
+
+		it.testElement('finds regular expressions without zero-length loops', async a => {
+			const { source } = await createSourceEditor(a, 'one 12 two 345');
+
+			a.equalValues(source.search.findAll(/\d+/), [
+				{ start: 4, end: 6 },
+				{ start: 11, end: 14 },
+			]);
+			a.equalValues(source.search.findAll(/(?=\w)/g).slice(0, 3), [
+				{ start: 0, end: 0 },
+				{ start: 1, end: 1 },
+				{ start: 2, end: 2 },
+			]);
+		});
+
+		it.testElement('replaces the next and all search matches', async a => {
+			const { source } = await createSourceEditor(a, 'one ONE one');
+
+			source.search.replaceNext('one', 'two', { caseSensitive: true });
+			a.equal(source.getText(), 'two ONE one');
+			source.cursor.go(0);
+			source.search.replaceAll('one', 'x', { caseSensitive: false });
+			a.equal(source.getText(), 'two x x');
+		});
+
 		it.testElement('undoes and redoes edits with their selections', async a => {
 			const { source, target } = await createSourceEditor(a, 'alpha');
 			const history: { undo(): void; redo(): void } = source.history;
