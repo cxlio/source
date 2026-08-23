@@ -343,6 +343,88 @@ export default spec('@cxl/ui.source', a => {
 			subscription.unsubscribe();
 		});
 
+		it.testElement('edits the public selection range', async a => {
+			const { source } = await createSourceEditor(a, 'alpha');
+
+			source.selection.set(4, 1);
+			a.equalValues(source.selection.range(), { start: 1, end: 4 });
+			const change = source.edit.replace('X');
+
+			a.equal(source.getText(), 'aXa');
+			a.equalValues(source.selection.range(), { start: 2, end: 2 });
+			a.equalValues(change, {
+				start: 1,
+				end: 4,
+				text: 'X',
+				removed: 'lph',
+				lineStart: 0,
+				lineEnd: 0,
+				lineDelta: 0,
+			});
+		});
+
+		it.testElement('undoes and redoes edits with their selections', async a => {
+			const { source, target } = await createSourceEditor(a, 'alpha');
+			const history: { undo(): void; redo(): void } = source.history;
+
+			await editorShortcut(a, target, 'Control', 'a');
+			await editorAction(a, target, 'type', 'beta');
+			a.equal(source.getText(), 'beta');
+
+			history.undo();
+			a.equal(source.getText(), 'alpha');
+			a.equal(clipboardSelection(target), 'alpha', 'restores replaced selection');
+
+			history.redo();
+			a.equal(source.getText(), 'beta');
+			a.equal(clipboardSelection(target), '', 'restores collapsed selection');
+		});
+
+		it.testElement('invalidates redo after a new edit', async a => {
+			const { source, target } = await createSourceEditor(a, '');
+
+			await editorAction(a, target, 'type', 'a');
+			await editorAction(a, target, 'type', 'b');
+			source.history.undo();
+			a.equal(source.getText(), '');
+
+			await editorAction(a, target, 'type', 'c');
+			source.history.redo();
+			a.equal(source.getText(), 'c');
+		});
+
+		it.testElement('undoes and redoes deletion', async a => {
+			const { source, target } = await createSourceEditor(a, 'ab');
+
+			await editorAction(a, target, 'press', 'End');
+			await editorAction(a, target, 'press', 'Backspace');
+			a.equal(source.getText(), 'a');
+
+			source.history.undo();
+			a.equal(source.getText(), 'ab');
+			source.history.redo();
+			a.equal(source.getText(), 'a');
+		});
+
+		it.testElement('clears history when text is replaced externally', async a => {
+			const { source, target } = await createSourceEditor(a, 'alpha');
+
+			await editorAction(a, target, 'type', 'X');
+			source.setText('external');
+			source.history.undo();
+
+			a.equal(source.getText(), 'external');
+		});
+
+		it.should('bounds incremental history records', a => {
+			const source = new Source();
+			source.setText('');
+			for (let edit = 0; edit <= 1_000; edit++) source.edit.replace('x');
+			for (let edit = 0; edit <= 1_000; edit++) source.history.undo();
+
+			a.equal(source.getText(), 'x');
+		});
+
 		it.testElement('emits compact changes for a large document', async a => {
 			const { source, target } = await createSourceEditor(
 				a,

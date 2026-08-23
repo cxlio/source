@@ -1,7 +1,7 @@
 {
 	"name": "@cxl/ui.source",
 	"version": "0.0.2",
-	"description": "A performant, virtualized source code viewer component for rendering and scrolling very large text buffers. Supports line-by-line rendering with automatic visible line management, suitable for file viewers, diffs, and source code editors.",
+	"description": "A high-performance, virtualized source code editor for large files, focused on responsive editing, syntax highlighting, navigation, and IDE-grade features.",
 	"license": "SEE LICENSE IN LICENSE.md",
 	"browser": "./index.bundle.js",
 	"type": "module",

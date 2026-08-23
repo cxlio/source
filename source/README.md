@@ -2,7 +2,7 @@
 	
 [![npm version](https://badge.fury.io/js/%40cxl%2Fui.source.svg)](https://badge.fury.io/js/%40cxl%2Fui.source)
 
-A performant, virtualized source code viewer component for rendering and scrolling very large text buffers. Supports line-by-line rendering with automatic visible line management, suitable for file viewers, diffs, and source code editors.
+A high-performance, virtualized source code editor for large files, focused on responsive editing, syntax highlighting, navigation, and IDE-grade features.
 
 ## Project Details
 

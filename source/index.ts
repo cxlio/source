@@ -33,6 +33,39 @@ export {
 
 export type SourceChange = BufferChange;
 
+export interface SourceRange {
+	readonly start: number;
+	readonly end: number;
+}
+
+export interface SourceSelectionFeature {
+	range(): SourceRange;
+	set(anchor: number, head?: number): void;
+}
+
+export interface SourceEditFeature {
+	replace(value: string, range?: SourceRange): SourceChange;
+}
+
+export interface SourceHistoryFeature {
+	undo(): void;
+	redo(): void;
+}
+
+interface SelectionSnapshot {
+	anchor: number;
+	head: number;
+}
+
+interface HistoryRecord {
+	change: SourceChange;
+	before: SelectionSnapshot;
+	after: SelectionSnapshot;
+}
+
+const MaxHistoryEntries = 1_000;
+const MaxHistoryText = 16 * 1024 * 1024;
+
 /**
  * Displays a large text buffer with incremental editing and viewport rendering.
  * Native text input, selection, and composition are synchronized with the
@@ -45,11 +78,66 @@ export type SourceChange = BufferChange;
 export class Source extends Code {
 	fatCursor = false;
 	readonly changes: Observable<SourceChange>;
+	readonly selection: SourceSelectionFeature = {
+		range: () => ({
+			start: Math.min(this.selectionAnchor, this.selectionHead),
+			end: Math.max(this.selectionAnchor, this.selectionHead),
+		}),
+		set: (anchor, head = anchor) =>
+			this.setSelectionState(anchor, head, true),
+	};
+	readonly edit: SourceEditFeature = {
+		replace: (value, range = this.selection.range()) =>
+			this.applyEdit(value, range),
+	};
+	readonly history: SourceHistoryFeature = {
+		undo: () => {
+			const record = this.undoRecords.pop();
+			if (!record) return;
+			this.undoSize -= this.historyRecordSize(record);
+			const { change } = record;
+			this.applyEdit(
+				change.removed,
+				{ start: change.start, end: change.start + change.text.length },
+				record.before,
+				false,
+			);
+			this.redoRecords.push(record);
+			this.redoSize = this.trimHistory(
+				this.redoRecords,
+				this.redoSize + this.historyRecordSize(record),
+			);
+		},
+		redo: () => {
+			const record = this.redoRecords.pop();
+			if (!record) return;
+			this.redoSize -= this.historyRecordSize(record);
+			const { change } = record;
+			this.applyEdit(
+				change.text,
+				{ start: change.start, end: change.start + change.removed.length },
+				record.after,
+				false,
+			);
+			this.undoRecords.push(record);
+			this.undoSize = this.trimHistory(
+				this.undoRecords,
+				this.undoSize + this.historyRecordSize(record),
+			);
+		},
+	};
 	protected readonly changeSubject = new Subject<SourceChange>();
 	protected readonly host = create('div', { id: 'body' });
 	protected offsetY = 0;
+	protected readonly redoRecords: HistoryRecord[] = [];
+	protected redoSize = 0;
 	protected readonly refresh = new ReplaySubject<{ dataLength: number }>(1);
+	protected selectionAnchor = 0;
+	protected selectionHead = 0;
+	protected selectionSync?: (scroll: boolean) => void;
 	protected readonly text = textCanvas(this.host);
+	protected readonly undoRecords: HistoryRecord[] = [];
+	protected undoSize = 0;
 
 	static {
 		component(Source, {
@@ -104,8 +192,6 @@ canvas {
 					const paste = on(input.element, 'paste');
 					const contextRadius = 2048;
 
-					let anchor = 0;
-					let head = 0;
 					let inputEnd = 0;
 					let inputStart = 0;
 					let pointerAnchor: number | undefined;
@@ -120,11 +206,8 @@ canvas {
 					if (!$.hasAttribute('aria-label'))
 						$.setAttribute('aria-label', 'Source editor');
 
-					function clamp(index: number) {
-						return Math.max(0, Math.min(index, buffer.length));
-					}
-
 					function syncInput() {
+						const { selectionAnchor: anchor, selectionHead: head } = $;
 						if (
 							!inputEnd ||
 							head < inputStart + contextRadius / 4 ||
@@ -144,6 +227,7 @@ canvas {
 					}
 
 					function renderSelection() {
+						const { selectionAnchor: anchor, selectionHead: head } = $;
 						const start = buffer.positionAt(Math.min(anchor, head));
 						const end = buffer.positionAt(Math.max(anchor, head));
 						cursor.setSelection(
@@ -158,7 +242,7 @@ canvas {
 					}
 
 					function scrollToHead() {
-						const position = buffer.positionAt(head);
+						const position = buffer.positionAt($.selectionHead);
 						const caret = text.getCaret(position);
 						if (caret) {
 							const top = caret.y + $.offsetY;
@@ -172,50 +256,36 @@ canvas {
 					}
 
 					function setSelection(next: number, extend = false) {
-						head = clamp(next);
-						if (!extend) anchor = head;
-						syncInput();
-						scrollToHead();
-						renderSelection();
-					}
-
-					function applyEdit(
-						start: number,
-						end: number,
-						value: string,
-						selectionStart = start + value.length,
-						selectionEnd = selectionStart,
-					) {
-						const change = $.replace(start, end, value);
-						anchor = clamp(selectionStart);
-						head = clamp(selectionEnd);
-						syncInput();
-						$.changeSubject.next(change);
+						$.setSelectionState(
+							extend ? $.selectionAnchor : next,
+							next,
+							true,
+						);
 					}
 
 					function replaceSelection(value: string) {
-						const start = Math.min(anchor, head);
-						applyEdit(start, Math.max(anchor, head), value);
+						$.edit.replace(value);
 					}
 
 					function normalizeInput(update: TextInputUpdate) {
-						return update.start === head - 1 && /^\. ?$/.test(update.text)
+						return update.start === $.selectionHead - 1 && /^\. ?$/.test(update.text)
 							? { ...update, text: update.text.replace('.', ' ') }
 							: update;
 					}
 
 					function copySelection(event: ClipboardEvent) {
-						if (anchor === head || !event.clipboardData) return false;
+						const { start, end } = $.selection.range();
+						if (start === end || !event.clipboardData) return false;
 						event.preventDefault();
 						event.clipboardData.setData(
 							'text/plain',
-							buffer.getText(Math.min(anchor, head), Math.max(anchor, head)),
+							buffer.getText(start, end),
 						);
 						return true;
 					}
 
 					function moveVertical(lines: number) {
-						const position = buffer.positionAt(head);
+						const position = buffer.positionAt($.selectionHead);
 						return buffer.indexAt({
 							line: position.line + lines,
 							ch: position.ch,
@@ -242,7 +312,7 @@ canvas {
 						const key = event.key.toLowerCase();
 						if (
 							(key !== 'c' && key !== 'x' && key !== 'v') ||
-							(key !== 'v' && anchor === head)
+							(key !== 'v' && $.selectionAnchor === $.selectionHead)
 						)
 							return;
 						input.clipboardElement.removeAttribute('aria-hidden');
@@ -257,13 +327,14 @@ canvas {
 
 					function moveKey(event: KeyboardEvent) {
 						const extend = event.shiftKey;
+						const { selectionAnchor: anchor, selectionHead: head } = $;
 						let next: number | undefined;
 						clipboardKey(event);
 						if (insertKey(event)) return;
 						if ((event.ctrlKey || event.metaKey) && event.key === 'a') {
-							anchor = 0;
-							head = buffer.length;
-							next = head;
+							event.preventDefault();
+							$.setSelectionState(0, buffer.length, false);
+							return;
 						} else if (event.key === 'ArrowLeft') {
 							next =
 								!extend && anchor !== head
@@ -289,10 +360,7 @@ canvas {
 						} else return;
 
 						event.preventDefault();
-						if ((event.ctrlKey || event.metaKey) && event.key === 'a') {
-							syncInput();
-							renderSelection();
-						} else setSelection(next, extend);
+						setSelection(next, extend);
 					}
 
 					function pointerPosition(event: PointerEvent) {
@@ -311,12 +379,20 @@ canvas {
 					}
 
 					function resetEditor() {
-						anchor = head = Math.min(head, buffer.length);
+						$.clearHistory();
 						inputEnd = inputStart = 0;
-						syncInput();
-						renderSelection();
+						$.setSelectionState(
+							Math.min($.selectionHead, buffer.length),
+							Math.min($.selectionHead, buffer.length),
+							false,
+						);
 					}
 
+					$.selectionSync = scroll => {
+						syncInput();
+						if (scroll) scrollToHead();
+						renderSelection();
+					};
 					$.rendered = renderSelection;
 					$.reset = resetEditor;
 					resetEditor();
@@ -332,12 +408,15 @@ canvas {
 						}),
 						input.updates.tap(update => {
 							update = normalizeInput(update);
-							applyEdit(
-								update.start,
-								update.end,
+							$.applyEdit(
 								update.text,
-								update.selectionStart,
-								update.selectionEnd,
+								{ start: update.start, end: update.end },
+								{
+									anchor: update.selectionStart,
+									head: update.selectionEnd,
+								},
+								true,
+								true,
 							);
 						}),
 						on(input.element, 'keydown').tap(moveKey),
@@ -362,12 +441,11 @@ canvas {
 							if (position === undefined) return;
 							event.preventDefault();
 							input.focus();
-							pointerAnchor = event.shiftKey ? anchor : position;
-							anchor = pointerAnchor;
-							head = position;
+							pointerAnchor = event.shiftKey
+								? $.selectionAnchor
+								: position;
 							$.setPointerCapture(event.pointerId);
-							syncInput();
-							renderSelection();
+							$.setSelectionState(pointerAnchor, position, false);
 						}),
 						on($, 'pointermove').tap(event => {
 							if (pointerAnchor === undefined) return;
@@ -377,10 +455,7 @@ canvas {
 							}
 							const position = pointerPosition(event);
 							if (position === undefined) return;
-							anchor = pointerAnchor;
-							head = position;
-							syncInput();
-							renderSelection();
+							$.setSelectionState(pointerAnchor, position, false);
 						}),
 						on($, 'pointerup').tap(stopPointerSelection),
 						on($, 'pointercancel').tap(stopPointerSelection),
@@ -399,6 +474,93 @@ canvas {
 	constructor() {
 		super();
 		this.changes = this.changeSubject;
+	}
+
+	protected applyEdit(
+		value: string,
+		range: SourceRange,
+		after?: SelectionSnapshot,
+		record = true,
+		coalesce = false,
+	) {
+		const before = this.selectionSnapshot();
+		const start = Math.min(range.start, range.end);
+		const change = this.replace(start, Math.max(range.start, range.end), value);
+		const next = change.start + value.length;
+		this.setSelectionState(
+			after?.anchor ?? next,
+			after?.head ?? next,
+			false,
+		);
+		if (record) {
+			this.recordHistory({
+				change,
+				before,
+				after: this.selectionSnapshot(),
+			}, coalesce);
+		}
+		this.changeSubject.next(change);
+		return change;
+	}
+
+	protected clearHistory() {
+		this.redoRecords.length = 0;
+		this.redoSize = 0;
+		this.undoRecords.length = 0;
+		this.undoSize = 0;
+	}
+
+	protected historyRecordSize(record: HistoryRecord) {
+		return record.change.text.length + record.change.removed.length;
+	}
+
+	protected recordHistory(record: HistoryRecord, coalesce: boolean) {
+		this.redoRecords.length = 0;
+		this.redoSize = 0;
+		const previous = this.undoRecords.at(-1);
+		if (
+			coalesce &&
+			previous &&
+			previous.after.anchor === record.before.anchor &&
+			previous.after.head === record.before.head &&
+			record.before.anchor === record.before.head &&
+			record.after.anchor === record.after.head &&
+			!record.change.removed &&
+			record.change.start ===
+				previous.change.start + previous.change.text.length
+		) {
+			this.undoSize -= this.historyRecordSize(previous);
+			previous.change = {
+				...previous.change,
+				text: previous.change.text + record.change.text,
+				lineEnd: Math.max(previous.change.lineEnd, record.change.lineEnd),
+				lineDelta: previous.change.lineDelta + record.change.lineDelta,
+			};
+			previous.after = record.after;
+			this.undoSize += this.historyRecordSize(previous);
+		} else {
+			this.undoRecords.push(record);
+			this.undoSize += this.historyRecordSize(record);
+		}
+		this.undoSize = this.trimHistory(this.undoRecords, this.undoSize);
+	}
+
+	protected selectionSnapshot(): SelectionSnapshot {
+		return { anchor: this.selectionAnchor, head: this.selectionHead };
+	}
+
+	protected setSelectionState(anchor: number, head: number, scroll: boolean) {
+		this.selectionAnchor = this.clampSelection(anchor);
+		this.selectionHead = this.clampSelection(head);
+		this.selectionSync?.(scroll);
+	}
+
+	protected trimHistory(records: HistoryRecord[], size: number) {
+		while (records.length > MaxHistoryEntries || size > MaxHistoryText) {
+			const record = records.shift();
+			if (record) size -= this.historyRecordSize(record);
+		}
+		return size;
 	}
 
 	protected override initializeRenderer() {
@@ -468,5 +630,17 @@ canvas {
 
 	protected override rendered() {}
 
-	protected override reset() {}
+	protected override reset() {
+		this.clearHistory();
+		this.selectionAnchor = this.selectionHead = Math.min(
+			this.selectionHead,
+			this.buffer.length,
+		);
+	}
+
+	private clampSelection(index: number) {
+		if (index === Infinity) return this.buffer.length;
+		if (!Number.isFinite(index)) return 0;
+		return Math.max(0, Math.min(Math.trunc(index), this.buffer.length));
+	}
 }

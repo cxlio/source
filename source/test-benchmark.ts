@@ -1,12 +1,15 @@
 import { spec, type TestApi } from '@cxl/spec';
 import { Buffer } from './buffer.js';
 import { Code } from './code.js';
+import { Source } from './index.js';
 import { textCanvas } from './text.js';
 
 const LineCount = 100_000;
 const HtmlLineCount = 10_000;
+const HistoryLineCount = 10_000;
 const ViewportLineCount = 60;
 const benchmarkOptions = { warmup: 250, sampleTime: 50, samples: 30 };
+const historyBenchmarkOptions = { warmup: 20, sampleTime: 20, samples: 10 };
 
 function createLargeSource(lineCount = LineCount) {
 	return Array.from(
@@ -62,6 +65,19 @@ export default spec('Source line rendering benchmarks', s => {
 			text.commit(0);
 			return text.lineCache.get(firstLine)?.height ?? 0;
 		}, benchmarkOptions);
+	});
+
+	s.test('large-document edit history', async a => {
+		const source = new Source();
+		const value = createLargeSource(HistoryLineCount);
+		const index = Math.floor(value.length / 2);
+		source.setText(value);
+
+		await a.benchmark(() => {
+			source.edit.replace('x', { start: index, end: index + 1 });
+			source.history.undo();
+			return source.selection.range().start;
+		}, historyBenchmarkOptions);
 	});
 
 	s.test('wrapped line', async a => {
