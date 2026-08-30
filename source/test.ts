@@ -5,7 +5,13 @@ import {
 	type Token,
 } from '@cxl/gbc.sdk';
 import { Buffer } from './buffer.js';
-import { Code, Source, type SourceChange } from './index.js';
+import {
+	Code,
+	Source,
+	gutterMarkers,
+	lineNumbers,
+	type SourceChange,
+} from './index.js';
 import { createTextareaInput } from './input.js';
 import { HitTest } from './hit-test.js';
 import { SourceHighlight } from './highlight.js';
@@ -186,11 +192,9 @@ export default spec('@cxl/ui.source', a => {
 		it.testElement('supports native pointer selection', async a => {
 			const code = await createCode(a, 'one\ntwo\nthree');
 			const content = code.shadowRoot?.querySelector('pre');
-			const text = content?.querySelector('code')?.firstChild;
-			if (!content || !text) {
-				a.ok(false, 'code exposes selectable HTML text');
-				return;
-			}
+			a.assert(content, 'code exposes selectable HTML text');
+			const text = content.querySelector('code')?.firstChild;
+			a.assert(text, 'code exposes selectable HTML text');
 			const characterRect = (index: number) => {
 				const range = document.createRange();
 				range.setStart(text, index);
@@ -288,10 +292,7 @@ export default spec('@cxl/ui.source', a => {
 			);
 			const body = source.shadowRoot?.querySelector<HTMLElement>('#body');
 			const measure = source.shadowRoot?.querySelector<HTMLElement>('#measure');
-			if (!body || !canvas || !measure) {
-				a.ok(false, 'editor rendering surface exists');
-				return;
-			}
+			a.assert(body && canvas && measure, 'editor rendering surface exists');
 			const lineHeight = measure.offsetHeight;
 			const rect = body.getBoundingClientRect();
 			const marker = a.element('div');
@@ -601,10 +602,7 @@ export default spec('@cxl/ui.source', a => {
 			const subscription = input.updates.subscribe(value => (update = value));
 			input.sync('alpha', 2, 2, 10);
 			const textarea = container.querySelector('textarea');
-			if (!textarea) {
-				a.ok(false, 'textarea input created');
-				return;
-			}
+			a.assert(textarea, 'textarea input created');
 			textarea.value = 'alXpha';
 			textarea.setSelectionRange(3, 3);
 			textarea.dispatchEvent(
@@ -704,10 +702,7 @@ export default spec('@cxl/ui.source', a => {
 			await editorAction(a, target, 'press', 'End');
 			await editorAction(a, target, 'press', 'Space');
 			const editContext = source.editContext;
-			if (!editContext) {
-				a.ok(false, 'EditContext is active');
-				return;
-			}
+			a.assert(editContext, 'EditContext is active');
 			editContext.dispatchEvent(
 				new TextUpdateEvent('textupdate', {
 					selectionEnd: 3,
@@ -730,10 +725,7 @@ export default spec('@cxl/ui.source', a => {
 			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>(
 				'canvas',
 			);
-			if (!canvas) {
-				a.ok(false, 'editor canvas exists');
-				return;
-			}
+			a.assert(canvas, 'editor canvas exists');
 			const context = canvas.getContext('2d');
 			const unchangedWidth = Math.floor(
 				context?.measureText('MMMM').width ?? 20,
@@ -752,10 +744,7 @@ export default spec('@cxl/ui.source', a => {
 		it.testElement('only paints the caret while focused', async a => {
 			const { source, target } = await createSourceEditor(a, 'alpha');
 			const canvas = source.shadowRoot?.querySelectorAll('canvas')[1];
-			if (!(canvas instanceof HTMLCanvasElement)) {
-				a.ok(false, 'caret canvas exists');
-				return;
-			}
+			a.assert(canvas, 'caret canvas exists');
 
 			a.ok(!isPainted(canvas, 0, canvas.height), 'caret hidden before focus');
 			await editorAction(a, target, 'press', 'ArrowRight');
@@ -772,10 +761,7 @@ export default spec('@cxl/ui.source', a => {
 		it.testElement('supports a fat cursor', async a => {
 			const { source, target } = await createSourceEditor(a, 'alpha');
 			const canvas = source.shadowRoot?.querySelectorAll('canvas')[1];
-			if (!(canvas instanceof HTMLCanvasElement)) {
-				a.ok(false, 'caret canvas exists');
-				return;
-			}
+			a.assert(canvas, 'caret canvas exists');
 
 			await editorAction(a, target, 'press', 'ArrowRight');
 			const thinWidth = paintedWidth(canvas);
@@ -812,10 +798,7 @@ export default spec('@cxl/ui.source', a => {
 			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>(
 				'canvas',
 			);
-			if (!body || !canvas) {
-				a.ok(false, 'editor rendering surface exists');
-				return;
-			}
+			a.assert(body && canvas, 'editor rendering surface exists');
 			const rect = body.getBoundingClientRect();
 			const width = canvas.getContext('2d')?.measureText('ABC').width ?? 22;
 			const lineHeight =
@@ -867,10 +850,7 @@ export default spec('@cxl/ui.source', a => {
 				: (source.shadowRoot?.querySelector('textarea') ?? source);
 			const body = source.shadowRoot?.querySelector<HTMLElement>('#body');
 			const measure = source.shadowRoot?.querySelector<HTMLElement>('#measure');
-			if (!body || !measure) {
-				a.ok(false, 'editor rendering surface exists');
-				return;
-			}
+			a.assert(body && measure, 'editor rendering surface exists');
 			const rect = body.getBoundingClientRect();
 			const edge = source.getBoundingClientRect().left + 2;
 			const lineHeight = measure.offsetHeight;
@@ -893,10 +873,7 @@ export default spec('@cxl/ui.source', a => {
 			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>(
 				'canvas',
 			);
-			if (!body || !canvas) {
-				a.ok(false, 'editor rendering surface exists');
-				return;
-			}
+			a.assert(body && canvas, 'editor rendering surface exists');
 			const rect = body.getBoundingClientRect();
 			const width = canvas.getContext('2d')?.measureText('ABCD').width ?? 29;
 			const y = rect.top + 6;
@@ -933,6 +910,73 @@ export default spec('@cxl/ui.source', a => {
 				clipboardSelection(target),
 				'',
 				'right click does not leave pointer selection active',
+			);
+		});
+	});
+
+	a.test('gutters', it => {
+		it.testElement('renders line numbers and named gutter markers', async a => {
+			const { source } = await createSourceEditor(a, 'one\ntwo\nthree');
+			const markers = gutterMarkers();
+			const marker = document.createElement('div');
+			marker.textContent = '!';
+
+			source.gutters = [lineNumbers(), markers];
+			markers.setGutterMarker(1, 'ide-hints-gutter', marker);
+			await a.sleep(20);
+
+			const numbers = source.shadowRoot?.querySelectorAll(
+				'[part~="line-number"]',
+			);
+			a.equal(numbers?.length, 3);
+			a.equal(numbers?.[0]?.textContent, '1');
+			a.equal(numbers?.[2]?.textContent, '3');
+			a.equal(
+				markers.lineInfo(1).gutterMarkers?.['ide-hints-gutter'],
+				marker,
+			);
+			a.ok(marker.isConnected);
+			a.equal(
+				source.shadowRoot
+					?.querySelector('[part~="line-numbers"]')
+					?.getAttribute('aria-hidden'),
+				'true',
+			);
+			await a.a11y(source);
+		});
+
+		it.testElement('updates gutter markers across edits and clearing', async a => {
+			const { source } = await createSourceEditor(a, 'one\ntwo');
+			const markers = gutterMarkers();
+			const marker = document.createElement('div');
+			source.gutters = [markers];
+			markers.setGutterMarker(1, 'ide-hints-gutter', marker);
+
+			source.edit.replace('\n', { start: 0, end: 0 });
+			a.equal(markers.lineInfo(1).gutterMarkers, undefined);
+			a.equal(
+				markers.lineInfo(2).gutterMarkers?.['ide-hints-gutter'],
+				marker,
+			);
+
+			markers.setGutterMarker(2, 'ide-hints-gutter', null);
+			a.equal(markers.lineInfo(2).gutterMarkers, undefined);
+			a.equal(marker.isConnected, false);
+		});
+
+		it.testElement('renders line numbers only for the virtual viewport', async a => {
+			const { source } = await createSourceEditor(a, createLargeSource());
+			source.gutters = [lineNumbers()];
+			await a.sleep(20);
+
+			const numbers = source.shadowRoot?.querySelectorAll(
+				'[part~="line-number"]',
+			);
+			a.ok(Boolean(numbers?.length));
+			a.ok((numbers?.length ?? LargeLineCount) < LargeLineCount);
+			a.equal(
+				source.shadowRoot?.querySelector('[part~="markers"]'),
+				null,
 			);
 		});
 	});
@@ -1093,10 +1137,7 @@ export default spec('@cxl/ui.source', a => {
 			tc.commit(0);
 
 			const caret = tc.getCaret({ line: 0, ch: 2 });
-			if (!caret) {
-				a.ok(false, 'caret measured');
-				return;
-			}
+			a.assert(caret, 'caret measured');
 			a.ok(caret.x > 0);
 			const selection = tc.getSelectionRects(
 				{ line: 0, ch: 1 },
@@ -1142,10 +1183,7 @@ export default spec('@cxl/ui.source', a => {
 			wrapped.renderLine(0, 'abcdefghijklmnop');
 			wrapped.commit(0);
 			const caret = wrapped.getCaret({ line: 0, ch: 10 });
-			if (!caret) {
-				a.ok(false, 'wrapped caret measured');
-				return;
-			}
+			a.assert(caret, 'wrapped caret measured');
 			a.ok(caret.y > 0, 'caret is on a wrapped visual line');
 			const hit = new HitTest(wrapped).getCaretAtPosition(
 				caret.x + 0.1,
@@ -1160,10 +1198,7 @@ export default spec('@cxl/ui.source', a => {
 			tc.renderLine(0, 'ABC');
 			tc.commit(0);
 			const line = tc.lineCache.get(0);
-			if (!line) {
-				a.ok(false, 'line measured');
-				return;
-			}
+			a.assert(line, 'line measured');
 
 			const caret = new HitTest(tc).getCaretAtPosition(
 				tc.canvas.offsetWidth,
@@ -1181,10 +1216,7 @@ export default spec('@cxl/ui.source', a => {
 			tc.commit(0);
 
 			const line = tc.lineCache.get(0);
-			if (!line) {
-				a.ok(false, 'line measured');
-				return;
-			}
+			a.assert(line, 'line measured');
 			a.equal(
 				[...line.lines].map(part => part.text).join(''),
 				value,

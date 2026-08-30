@@ -1,4 +1,5 @@
 import {
+	EMPTY,
 	on,
 	onResize,
 	focused,
@@ -21,8 +22,17 @@ import { HitTest } from './hit-test.js';
 import { type BufferChange, type BufferPosition } from './buffer.js';
 import { createTextInput, type TextInputUpdate } from './input.js';
 import { Code } from './code.js';
+import { type SourceGutter } from './gutter.js';
 
 export { Code } from './code.js';
+export {
+	gutterMarkers,
+	lineNumbers,
+	type SourceGutter,
+	type SourceGutterMarkers,
+	type SourceGutterRenderContext,
+	type SourceLineInfo,
+} from './gutter.js';
 
 export {
 	type SourceToken,
@@ -150,6 +160,7 @@ function* searchMatches(
  */
 export class Source extends Code {
 	fatCursor = false;
+	gutters: readonly SourceGutter[] = [];
 	readonly changes: Observable<SourceChange>;
 	readonly cursor: SourceCursorFeature = (() => {
 		const source = this;
@@ -255,6 +266,10 @@ export class Source extends Code {
 	};
 	protected activeSearch?: ActiveSearch;
 	protected readonly changeSubject = new Subject<SourceChange>();
+	protected readonly gutterHost = create('div', {
+		id: 'gutters',
+		part: 'gutters',
+	});
 	protected readonly host = create('div', { id: 'body' });
 	protected offsetY = 0;
 	protected readonly redoRecords: HistoryRecord[] = [];
@@ -270,7 +285,7 @@ export class Source extends Code {
 	static {
 		component(Source, {
 			tagName: 'c-source',
-			init: [property('fatCursor')],
+			init: [property('fatCursor'), property('gutters')],
 			augment: [
 				css(`
 :host {
@@ -291,12 +306,45 @@ canvas {
 	width:100%;
 	height:100%;
 }
-#body { height:100%; }
+#body { height:100%; position:relative; }
+#gutters {
+	background: var(--cxl-color-surface-container, Canvas);
+	color: var(--cxl-color-on-surface-variant, CanvasText);
+	cursor: default;
+	display: flex;
+	height: 100%;
+	left: 0;
+	overflow: hidden;
+	position: absolute;
+	top: 0;
+	z-index: 1;
+}
+#gutters > [part~="gutter"],
+#gutters > [part~="gutter-group"] > [part~="gutter"] {
+	box-sizing: border-box;
+	min-width: 1em;
+	position: relative;
+}
+#gutters > [part~="gutter-group"] { display: flex; }
+#gutters [part~="line-numbers"] { text-align: right; }
+#gutters [part~="gutter-element"] {
+	box-sizing: border-box;
+	left: 0;
+	overflow: hidden;
+	padding: 0 0.5ch;
+	position: absolute;
+	right: 0;
+}
+#gutters [part~="gutter-element"] > * {
+	box-sizing: border-box;
+	height: 100%;
+	width: 100%;
+}
 #measure {
 	visibility:hidden;
 	position: absolute;
-	top: 0; left: 0;
-	width: 100%;
+	top: 0; left: var(--source-gutter-width, 0px);
+	width: calc(100% - var(--source-gutter-width, 0px));
 	white-space: pre-wrap;
 	word-break: break-word;
 }
@@ -565,6 +613,7 @@ canvas {
 						}),
 						on($, 'pointerdown').tap(event => {
 							if (event.button !== 0) return;
+							if (event.composedPath().includes($.gutterHost)) return;
 							const position = pointerPosition(event);
 							if (position === undefined) return;
 							event.preventDefault();
@@ -593,6 +642,22 @@ canvas {
 						onThemeChange.tap(() => {
 							cursor.updateStyles();
 						}),
+						get($, 'gutters')
+							.tap(gutters => {
+								$.gutterHost.replaceChildren(
+									...gutters.map(gutter => gutter.element),
+								);
+								$.refresh.next({ dataLength: buffer.getLineCount() });
+							})
+							.switchMap(gutters => {
+								const changes = gutters.flatMap(gutter =>
+									gutter.changes ? [gutter.changes] : [],
+								);
+								return changes.length ? merge(...changes) : EMPTY;
+							})
+							.tap(() =>
+								$.refresh.next({ dataLength: buffer.getLineCount() }),
+							),
 					);
 				},
 			],
@@ -755,7 +820,7 @@ canvas {
 
 	protected override initializeRenderer() {
 		const { host, refresh, text } = this;
-		host.append(text.canvas, text.measureElement);
+		host.append(this.gutterHost, text.canvas, text.measureElement);
 		this.shadowRoot?.append(host);
 		refresh.next({ dataLength: this.buffer.getLineCount() });
 
@@ -765,6 +830,12 @@ canvas {
 					onResize(host).raf(() => {
 						if (host.clientHeight > 0 && host.clientWidth > 0)
 							text.resize();
+					}),
+					onResize(this.gutterHost).raf(() => {
+						const width = this.gutterHost.offsetWidth;
+						host.style.setProperty('--source-gutter-width', `${width}px`);
+						text.resize();
+						refresh.next({ dataLength: this.buffer.getLineCount() });
 					}),
 					virtualScroll({
 						host,
@@ -784,6 +855,12 @@ canvas {
 					}).tap(event => {
 						this.offsetY = event.offset;
 						text.commit(event.offset);
+						for (const gutter of this.gutters)
+							gutter.render({
+								lines: text.toRender,
+								lineCount: this.buffer.getLineCount(),
+								offset: event.offset,
+							});
 						this.rendered();
 					}),
 				),
@@ -801,6 +878,7 @@ canvas {
 	}
 
 	protected override replaced(change: BufferChange) {
+		for (const gutter of this.gutters) gutter.replaced?.(change);
 		this.text.invalidate(
 			change.lineStart,
 			change.lineEnd,
@@ -822,6 +900,7 @@ canvas {
 
 	protected override reset() {
 		this.clearHistory();
+		for (const gutter of this.gutters) gutter.reset?.();
 		this.selectionAnchor = this.selectionHead = Math.min(
 			this.selectionHead,
 			this.buffer.length,

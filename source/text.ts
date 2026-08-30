@@ -521,6 +521,7 @@ export function textCanvas(host: HTMLElement) {
 		updateStyles,
 		renderLine,
 		lineCache,
+		toRender,
 
 		get firstVisibleLine() {
 			return firstVisibleLine;

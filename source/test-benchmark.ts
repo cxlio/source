@@ -1,13 +1,14 @@
 import { spec, type TestApi } from '@cxl/spec';
 import { Buffer } from './buffer.js';
 import { Code } from './code.js';
-import { Source } from './index.js';
+import { gutterMarkers, Source } from './index.js';
 import { textCanvas } from './text.js';
 
 const LineCount = 100_000;
 const HtmlLineCount = 10_000;
 const HistoryLineCount = 10_000;
 const ViewportLineCount = 60;
+const MarkerCount = 10_000;
 const benchmarkOptions = { warmup: 250, sampleTime: 50, samples: 30 };
 const featureBenchmarkOptions = { warmup: 20, sampleTime: 20, samples: 10 };
 
@@ -65,6 +66,33 @@ export default spec('Source line rendering benchmarks', s => {
 			text.commit(0);
 			return text.lineCache.get(firstLine)?.height ?? 0;
 		}, benchmarkOptions);
+	});
+
+	s.test('large-document gutter markers', async a => {
+		const markers = gutterMarkers();
+		a.dom.append(markers.element);
+		for (let line = 0; line < MarkerCount; line++)
+			markers.setGutterMarker(
+				line,
+				'diagnostics',
+				document.createElement('span'),
+			);
+		let firstLine = 0;
+
+		await a.benchmark(() => {
+			firstLine = (firstLine + ViewportLineCount) %
+				(MarkerCount - ViewportLineCount);
+			markers.render({
+				lines: Array.from({ length: ViewportLineCount }, (_, line) => ({
+					row: firstLine + line,
+					offsetTop: line * 16,
+					height: 16,
+				})),
+				lineCount: MarkerCount,
+				offset: 0,
+			});
+			return markers.element.firstElementChild?.childElementCount ?? 0;
+		}, featureBenchmarkOptions);
 	});
 
 	s.test('large-document edit history', async a => {
