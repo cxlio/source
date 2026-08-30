@@ -110,6 +110,7 @@ export class SourceHighlight {
 		while (low <= high) {
 			const middle = (low + high) >> 1;
 			const token = this.#tokens[middle];
+			if (!token) return;
 			if (index < token.start) high = middle - 1;
 			else if (index > token.end) low = middle + 1;
 			else return token;

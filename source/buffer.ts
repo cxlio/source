@@ -23,12 +23,18 @@ interface IndexedPiece extends Piece {
 	lineBreaks: number;
 }
 
+function getItem<T>(values: readonly T[], index: number): T {
+	const value = values[index];
+	if (value === undefined) throw new RangeError('Index out of bounds');
+	return value;
+}
+
 function lowerBound(values: readonly number[], value: number) {
 	let low = 0;
 	let high = values.length;
 	while (low < high) {
 		const middle = (low + high) >> 1;
-		if (values[middle] < value) low = middle + 1;
+		if (getItem(values, middle) < value) low = middle + 1;
 		else high = middle;
 	}
 	return low;
@@ -44,11 +50,11 @@ export class Buffer {
 	#originalLineBreaks: number[] = [];
 
 	get length() {
-		return this.#lengths[this.#lengths.length - 1];
+		return this.#lengths.at(-1) ?? 0;
 	}
 
 	getLineCount() {
-		return this.#lineBreaks[this.#lineBreaks.length - 1] + 1;
+		return (this.#lineBreaks.at(-1) ?? 0) + 1;
 	}
 
 	getLine(line: number) {
@@ -67,7 +73,7 @@ export class Buffer {
 		const parts: string[] = [];
 		const lastPiece = Math.min(to.piece, this.#table.length - 1);
 		for (let index = from.piece; index <= lastPiece; index++) {
-			const piece = this.#table[index];
+			const piece = getItem(this.#table, index);
 			const pieceStart = index === from.piece ? from.offset : 0;
 			const pieceEnd =
 				index === to.piece ? to.offset : piece.length;
@@ -86,7 +92,7 @@ export class Buffer {
 	charAt(index: number) {
 		if (index < 0 || index >= this.length) return '';
 		const { piece: pieceIndex, offset } = this.#boundary(index);
-		const piece = this.#table[pieceIndex];
+		const piece = getItem(this.#table, pieceIndex);
 		return this.#source(piece).charAt(piece.start + offset);
 	}
 
@@ -123,9 +129,9 @@ export class Buffer {
 		const table: IndexedPiece[] = [];
 
 		for (let index = 0; index < from.piece; index++)
-			table.push(this.#table[index]);
+			table.push(getItem(this.#table, index));
 		if (from.offset) {
-			const piece = this.#table[from.piece];
+			const piece = getItem(this.#table, from.piece);
 			table.push(this.#piece(piece.source, piece.start, from.offset));
 		}
 
@@ -137,7 +143,7 @@ export class Buffer {
 		}
 
 		if (to.piece < this.#table.length) {
-			const endPiece = this.#table[to.piece];
+			const endPiece = getItem(this.#table, to.piece);
 			if (to.offset < endPiece.length)
 				table.push(
 					this.#piece(
@@ -148,7 +154,7 @@ export class Buffer {
 				);
 		}
 		for (let index = to.piece + 1; index < this.#table.length; index++)
-			table.push(this.#table[index]);
+			table.push(getItem(this.#table, index));
 
 		this.#table = this.#merge(table);
 		this.#rebuildIndexes();
@@ -186,10 +192,10 @@ export class Buffer {
 
 	#boundary(index: number) {
 		const boundary = lowerBound(this.#lengths, index);
-		if (this.#lengths[boundary] === index)
+		if (getItem(this.#lengths, boundary) === index)
 			return { piece: boundary, offset: 0 };
 		const piece = boundary - 1;
-		return { piece, offset: index - this.#lengths[piece] };
+		return { piece, offset: index - getItem(this.#lengths, piece) };
 	}
 
 	#clampIndex(index: number) {
@@ -201,12 +207,12 @@ export class Buffer {
 	#countLineBreaksBefore(index: number) {
 		if (index <= 0) return 0;
 		if (index >= this.length)
-			return this.#lineBreaks[this.#lineBreaks.length - 1];
+			return this.#lineBreaks.at(-1) ?? 0;
 		const boundary = this.#boundary(index);
-		const piece = this.#table[boundary.piece];
+		const piece = getItem(this.#table, boundary.piece);
 		const breaks = this.#sourceLineBreaks(piece);
 		return (
-			this.#lineBreaks[boundary.piece] +
+			getItem(this.#lineBreaks, boundary.piece) +
 			lowerBound(breaks, piece.start + boundary.offset) -
 			lowerBound(breaks, piece.start)
 		);
@@ -217,15 +223,17 @@ export class Buffer {
 		let high = this.#table.length - 1;
 		while (low < high) {
 			const middle = (low + high) >> 1;
-			if (this.#lineBreaks[middle + 1] > line) high = middle;
+			if (getItem(this.#lineBreaks, middle + 1) > line) high = middle;
 			else low = middle + 1;
 		}
-		const piece = this.#table[low];
+		const piece = getItem(this.#table, low);
 		const breaks = this.#sourceLineBreaks(piece);
 		const first = lowerBound(breaks, piece.start);
-		const localLine = line - this.#lineBreaks[low];
+		const localLine = line - getItem(this.#lineBreaks, low);
 		return (
-			this.#lengths[low] + breaks[first + localLine] - piece.start
+			getItem(this.#lengths, low) +
+			getItem(breaks, first + localLine) -
+			piece.start
 		);
 	}
 
@@ -244,8 +252,7 @@ export class Buffer {
 		for (const piece of table) {
 			const previous = merged.at(-1);
 			if (
-				previous &&
-				previous.source === piece.source &&
+				previous?.source === piece.source &&
 				previous.start + previous.length === piece.start
 			) {
 				previous.length += piece.length;
@@ -267,10 +274,10 @@ export class Buffer {
 		this.#lineBreaks = [0];
 		for (const piece of this.#table) {
 			this.#lengths.push(
-				this.#lengths[this.#lengths.length - 1] + piece.length,
+				(this.#lengths.at(-1) ?? 0) + piece.length,
 			);
 			this.#lineBreaks.push(
-				this.#lineBreaks[this.#lineBreaks.length - 1] +
+				(this.#lineBreaks.at(-1) ?? 0) +
 					piece.lineBreaks,
 			);
 		}

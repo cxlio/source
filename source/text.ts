@@ -87,7 +87,10 @@ export function textCanvas(host: HTMLElement) {
 		};
 	}
 
-	function getCharIndexAtPoint(x: number, y: number) {
+	function getCharIndexAtPoint(
+		x: number,
+		y: number,
+	): [number, number] | undefined {
 		const len = textN.length;
 		if (len === 0) return;
 
@@ -141,7 +144,10 @@ export function textCanvas(host: HTMLElement) {
 		return [charIndex, lineNumber];
 	}
 
-	function findLineStart(sourceLine: SourceLine, offsetY: number) {
+	function findLineStart(
+		sourceLine: SourceLine,
+		offsetY: number,
+	): [number, number] | undefined {
 		for (const cachedLine of sourceLine.lines) {
 			if (
 				cachedLine.y <= offsetY &&
@@ -219,7 +225,9 @@ export function textCanvas(host: HTMLElement) {
 		textN.textContent = text || ' ';
 
 		const maxY = host.offsetHeight + offsetY;
-		const startLine = offsetY ? findLineStart(sourceLine, offsetY) : [0, 0];
+		const startLine: [number, number] | undefined = offsetY
+			? findLineStart(sourceLine, offsetY)
+			: [0, 0];
 		if (!startLine) return;
 
 		const start = startLine[0];
@@ -385,15 +393,17 @@ export function textCanvas(host: HTMLElement) {
 		if (local <= 0) return line.chars[0]?.x ?? 0;
 		if (local >= line.chars.length) {
 			const char = line.chars[line.chars.length - 1];
-			return char.x + char.width;
+			return char ? char.x + char.width : 0;
 		}
-		return line.chars[local].x;
+		return line.chars[local]?.x ?? 0;
 	}
 
 	function getCharacterWidth(line: SubLine, index: number) {
 		if (!line.chars.length) return 1;
 		const local = index - line.startIndex;
-		return line.chars[Math.min(Math.max(local, 0), line.chars.length - 1)].width;
+		return line.chars[
+			Math.min(Math.max(local, 0), line.chars.length - 1)
+		]?.width ?? 1;
 	}
 
 	function getCaret({ line, ch }: TextPosition): TextRect | undefined {

@@ -15,7 +15,7 @@ import {
 import { createTextareaInput } from './input.js';
 import { HitTest } from './hit-test.js';
 import { SourceHighlight } from './highlight.js';
-import { textCanvas, SourceLine } from './text.js';
+import { textCanvas, type SourceLine } from './text.js';
 
 const LargeLineCount = 100_000;
 
@@ -189,7 +189,7 @@ async function editorValue(a: TestApi, element: Element) {
 
 export default spec('@cxl/ui.source', a => {
 	a.test('code', it => {
-		it.testElement('supports native pointer selection', async a => {
+		it.testElement('supports native pointer selection', async (a: TestApi) => {
 			const code = await createCode(a, 'one\ntwo\nthree');
 			const content = code.shadowRoot?.querySelector('pre');
 			a.assert(content, 'code exposes selectable HTML text');
@@ -258,7 +258,7 @@ export default spec('@cxl/ui.source', a => {
 	});
 
 	a.test('native input', it => {
-		it.testElement('renders text set before connection after editing', async a => {
+		it.testElement('renders text set before connection after editing', async (a: TestApi) => {
 			const container = a.element('div');
 			container.style.cssText =
 				'display:flex;box-sizing:border-box;min-height:360px;padding:16px;width:100%';
@@ -492,7 +492,7 @@ export default spec('@cxl/ui.source', a => {
 			a.equal(source.getText(), 'x');
 		});
 
-		it.testElement('emits compact changes for a large document', async a => {
+		it.testElement('emits compact changes for a large document', async (a: TestApi) => {
 			const { source, target } = await createSourceEditor(
 				a,
 				createLargeSource(),
@@ -505,8 +505,10 @@ export default spec('@cxl/ui.source', a => {
 			await editorAction(a, target, 'type', 'X');
 
 			a.equal(changes.length, 1);
-			a.equal(changes[0].text, 'X');
-			a.equal(changes[0].removed, '');
+			const [change] = changes;
+			a.assert(change);
+			a.equal(change.text, 'X');
+			a.equal(change.removed, '');
 			subscription.unsubscribe();
 		});
 
@@ -592,7 +594,7 @@ export default spec('@cxl/ui.source', a => {
 			a.equal(source.getText(), '!pasted\nsecondalpha\nbeta');
 		});
 
-		it.should('apply bounded textarea input changes', a => {
+		it.should('apply bounded textarea input changes', (a: TestApi) => {
 			const host = a.element('div');
 			const container = document.createElement('div');
 			host.attachShadow({ mode: 'open' }).append(container);
@@ -697,7 +699,7 @@ export default spec('@cxl/ui.source', a => {
 			a.equal(await editorValue(a, target), 'ab\nc');
 		});
 
-		it.testElement('insert spaces without scrolling or punctuation', async a => {
+		it.testElement('insert spaces without scrolling or punctuation', async (a: TestApi) => {
 			const { source, target } = await createSourceEditor(a, 'a');
 			await editorAction(a, target, 'press', 'End');
 			await editorAction(a, target, 'press', 'Space');
@@ -720,7 +722,7 @@ export default spec('@cxl/ui.source', a => {
 			);
 		});
 
-		it.testElement('keep text fixed through first focus and edit', async a => {
+		it.testElement('keep text fixed through first focus and edit', async (a: TestApi) => {
 			const { source, target } = await createSourceEditor(a, 'MMMM');
 			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>(
 				'canvas',
@@ -741,7 +743,7 @@ export default spec('@cxl/ui.source', a => {
 			a.equalValues(edited, initial, 'first edit keeps painted text fixed');
 		});
 
-		it.testElement('only paints the caret while focused', async a => {
+		it.testElement('only paints the caret while focused', async (a: TestApi) => {
 			const { source, target } = await createSourceEditor(a, 'alpha');
 			const canvas = source.shadowRoot?.querySelectorAll('canvas')[1];
 			a.assert(canvas, 'caret canvas exists');
@@ -758,7 +760,7 @@ export default spec('@cxl/ui.source', a => {
 			a.equal(await editorValue(a, target), 'aXlpha', 'caret position preserved');
 		});
 
-		it.testElement('supports a fat cursor', async a => {
+		it.testElement('supports a fat cursor', async (a: TestApi) => {
 			const { source, target } = await createSourceEditor(a, 'alpha');
 			const canvas = source.shadowRoot?.querySelectorAll('canvas')[1];
 			a.assert(canvas, 'caret canvas exists');
@@ -792,7 +794,7 @@ export default spec('@cxl/ui.source', a => {
 			a.ok(source.scrollTop > 0, 'caret navigation scrolls the viewport');
 		});
 
-		it.testElement('select text with a real pointer drag', async a => {
+		it.testElement('select text with a real pointer drag', async (a: TestApi) => {
 			const { source, target } = await createSourceEditor(a, 'ABCDE');
 			const body = source.shadowRoot?.querySelector<HTMLElement>('#body');
 			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>(
@@ -838,7 +840,7 @@ export default spec('@cxl/ui.source', a => {
 			a.equal(clipboardSelection(target), 'ABCDE');
 		});
 
-		it.testElement('select downward from the left edge', async a => {
+		it.testElement('select downward from the left edge', async (a: TestApi) => {
 			const source = new Source();
 			source.style.cssText =
 				'display:block;width:320px;height:160px;padding-left:8px;font:12px monospace';
@@ -867,7 +869,7 @@ export default spec('@cxl/ui.source', a => {
 			a.equal(clipboardSelection(target), 'one\ntwo\n');
 		});
 
-		it.testElement('ignore pointer movement after a context menu', async a => {
+		it.testElement('ignore pointer movement after a context menu', async (a: TestApi) => {
 			const { source, target } = await createSourceEditor(a, 'ABCDE');
 			const body = source.shadowRoot?.querySelector<HTMLElement>('#body');
 			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>(
@@ -1130,7 +1132,7 @@ export default spec('@cxl/ui.source', a => {
 			);
 		});
 
-		it.should('measure caret and selection geometry', a => {
+		it.should('measure caret and selection geometry', (a: TestApi) => {
 			const tc = createTextCanvas(a);
 			tc.begin(0);
 			tc.renderLine(0, 'ABC');
@@ -1144,7 +1146,9 @@ export default spec('@cxl/ui.source', a => {
 				{ line: 0, ch: 3 },
 			);
 			a.equal(selection.length, 1);
-			a.ok(selection[0].width > 0);
+			const [selectionRect] = selection;
+			a.assert(selectionRect);
+			a.ok(selectionRect.width > 0);
 
 			const hitTest = new HitTest(tc);
 			const before = hitTest.getCaretAtPosition(
@@ -1170,7 +1174,7 @@ export default spec('@cxl/ui.source', a => {
 			a.equal(first?.baseline, second?.baseline);
 		});
 
-		it.should('hit test empty and wrapped visual lines', a => {
+		it.should('hit test empty and wrapped visual lines', (a: TestApi) => {
 			const empty = createTextCanvas(a);
 			empty.begin(0);
 			empty.renderLine(0, '');
@@ -1192,7 +1196,7 @@ export default spec('@cxl/ui.source', a => {
 			a.equalValues(hit?.position, { line: 0, ch: 10 });
 		});
 
-		it.should('hit test whitespace below the final line', a => {
+		it.should('hit test whitespace below the final line', (a: TestApi) => {
 			const tc = createTextCanvas(a);
 			tc.begin(0);
 			tc.renderLine(0, 'ABC');
@@ -1207,7 +1211,7 @@ export default spec('@cxl/ui.source', a => {
 			a.equalValues(caret?.position, { line: 0, ch: 3 });
 		});
 
-		it.should('paint complete wrapped and tabbed lines', a => {
+		it.should('paint complete wrapped and tabbed lines', (a: TestApi) => {
 			const tc = createTextCanvas(a);
 			const value = `start\t${'wrapped '.repeat(8)}end`;
 

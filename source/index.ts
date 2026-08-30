@@ -774,8 +774,7 @@ canvas {
 		const previous = this.undoRecords.at(-1);
 		if (
 			coalesce &&
-			previous &&
-			previous.after.anchor === record.before.anchor &&
+			previous?.after.anchor === record.before.anchor &&
 			previous.after.head === record.before.head &&
 			record.before.anchor === record.before.head &&
 			record.after.anchor === record.after.head &&

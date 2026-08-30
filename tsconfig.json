@@ -3,19 +3,29 @@
 		"incremental": true,
 		"strict": true,
 		"target": "es2023",
-		"module": "esnext",
-		"lib": ["ES2023"],
+		"module": "nodenext",
+		"lib": [
+			"ES2023"
+		],
 		"sourceMap": false,
-		"moduleResolution": "Node",
+		"moduleResolution": "nodenext",
 		"noUnusedLocals": true,
 		"noUnusedParameters": true,
 		"composite": true,
 		"skipLibCheck": true,
-		"typeRoots": ["./node_modules/@types"],
+		"typeRoots": [
+			"./node_modules/@types"
+		],
 		"types": [],
 		"paths": {
-			"@cxl/rx": ["./rx"]
-		}
+			"@cxl/rx": [
+				"./rx"
+			]
+		},
+		"verbatimModuleSyntax": true,
+		"isolatedModules": true,
+		"noUncheckedIndexedAccess": true,
+		"noUncheckedSideEffectImports": true
 	},
 	"files": []
 }

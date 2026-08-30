@@ -28,6 +28,14 @@ export class HitTest {
 		);
 		const charIndex = index === -1 ? part.chars.length - 1 : index;
 		const char = part.chars[charIndex];
+		if (!char)
+			return {
+				position: { line: sourceLine.row, ch: part.startIndex },
+				x: 0,
+				y: top + part.y,
+				height: part.height,
+				line: sourceLine.row,
+			};
 		const isBefore = x < char.x + char.width / 2;
 		return {
 			position: {
