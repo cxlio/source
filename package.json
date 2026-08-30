@@ -12,8 +12,7 @@
 	"type": "module",
 	"bugs": "https://github.com/cxlio/source/issues",
 	"scripts": {
-		"build": "npm run build --prefix source audit package docs && cp ./dist/source/package/index.bundle.js docs/demo",
-		"test": "npm test --prefix source"
+		"build": "cxl-build"
 	},
 	"repository": {
 		"type": "git",
