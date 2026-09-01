@@ -25,7 +25,12 @@
 		"verbatimModuleSyntax": true,
 		"isolatedModules": true,
 		"noUncheckedIndexedAccess": true,
-		"noUncheckedSideEffectImports": true
+		"noUncheckedSideEffectImports": true,
+		"noFallthroughCasesInSwitch": true,
+		"allowUnusedLabels": false,
+		"allowUnreachableCode": false,
+		"forceConsistentCasingInFileNames": true,
+		"libReplacement": false
 	},
 	"files": []
 }

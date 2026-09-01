@@ -250,7 +250,16 @@ export class Source extends Code {
 		) => {
 			if (value === undefined) return;
 			this.search.lastReplace = value;
-			const range = this.findSearch(query, options);
+			const selection = this.selection.range();
+			const active = this.activeSearch;
+			const range =
+				active !== undefined &&
+				active.query === query &&
+				active.caseSensitive === options?.caseSensitive &&
+				active.range.start === selection.start &&
+				active.range.end === selection.end
+					? selection
+					: this.findSearch(query, options);
 			if (range) this.edit.replace(value, range);
 		},
 		replaceAll: (
@@ -266,10 +275,11 @@ export class Source extends Code {
 	};
 	protected activeSearch?: ActiveSearch;
 	protected readonly changeSubject = new Subject<SourceChange>();
-	protected readonly gutterHost = create('div', {
-		id: 'gutters',
-		part: 'gutters',
-	});
+	protected readonly gutterHost = (() => {
+		const element = create('div', { id: 'gutters' });
+		element.setAttribute('part', 'gutters');
+		return element;
+	})();
 	protected readonly host = create('div', { id: 'body' });
 	protected offsetY = 0;
 	protected readonly redoRecords: HistoryRecord[] = [];

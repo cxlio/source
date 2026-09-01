@@ -188,6 +188,43 @@ async function editorValue(a: TestApi, element: Element) {
 }
 
 export default spec('@cxl/ui.source', a => {
+	a.test('demo', it => {
+		it.testElement('loads as a self-contained static page', async (a: TestApi) => {
+			const path = '../../docs/demo/index.html';
+			const frame = a.element('iframe');
+			const loaded = new Promise<void>(resolve =>
+				frame.addEventListener('load', () => resolve(), { once: true }),
+			);
+			frame.src = path;
+			await loaded;
+
+			const editor = frame.contentDocument?.querySelector('c-source');
+			a.assert(editor, 'demo editor exists');
+			a.ok(
+				Boolean(frame.contentWindow?.customElements.get('c-source')),
+				'demo editor initializes',
+			);
+			const source = editor as HTMLElement &
+				Pick<Source, 'getText' | 'selection'>;
+			const find = frame.contentDocument?.querySelector<HTMLInputElement>('#find');
+			const replace =
+				frame.contentDocument?.querySelector<HTMLInputElement>('#replace');
+			const next = frame.contentDocument?.querySelector<HTMLButtonElement>('#next');
+			const replaceNext =
+				frame.contentDocument?.querySelector<HTMLButtonElement>('#replace-next');
+			a.assert(find, 'demo find input exists');
+			a.assert(replace, 'demo replace input exists');
+			a.assert(next, 'demo next button exists');
+			a.assert(replaceNext, 'demo replace button exists');
+			find.value = 'source';
+			replace.value = 'editor';
+			next.click();
+			const match = source.selection.range();
+			replaceNext.click();
+			a.equal(source.getText().slice(match.start, match.start + 6), 'editor');
+		});
+	});
+
 	a.test('code', it => {
 		it.testElement('supports native pointer selection', async (a: TestApi) => {
 			const code = await createCode(a, 'one\ntwo\nthree');
@@ -423,6 +460,7 @@ export default spec('@cxl/ui.source', a => {
 		it.testElement('replaces the next and all search matches', async a => {
 			const { source } = await createSourceEditor(a, 'one ONE one');
 
+			source.search.find('one', { caseSensitive: true });
 			source.search.replaceNext('one', 'two', { caseSensitive: true });
 			a.equal(source.getText(), 'two ONE one');
 			source.cursor.go(0);

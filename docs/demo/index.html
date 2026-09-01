@@ -1,54 +1,223 @@
 <!doctype html>
-<head>
-	<title>@cxl/source - Demo</title>
-	<style>
-		body {
-			position: absolute;
-			inset: 0;
-			display: flex;
-			flex-direction: column;
-			padding: 0;
-			margin: 0;
-		}
-		#toolbar {
-			height: 60px;
-			box-sizing: border-box;
-			padding: 12px 16px;
-			display: flex;
-			align-items: center;
-		}
-		#source {
-			flex-grow: 1;
-		}
-	</style>
-	<script type="importmap">
-		{
-			"imports": {
-				"@cxl/ui": "/source/node_modules/@cxl/ui/index.js"
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<link rel="icon" href="data:," />
+		<title>@cxl/ui.source demo</title>
+		<style>
+			:root {
+				color-scheme: light dark;
+				font-family: Inter, system-ui, sans-serif;
+				background: Canvas;
+				color: CanvasText;
+				--ide-keyword: #0d47a1;
+				--ide-operator: #1976d2;
+				--ide-number: #e64a19;
+				--ide-variable: #bf360c;
+				--ide-comment: #546e7a;
+				--ide-string: #e64a19;
 			}
-		}
-	</script>
-	<script type="module" src="../../dist/source/index.js"></script>
-</head>
-<body>
-	<div id="toolbar">
-		<c-t font="title-medium">@cxl/source</c-t>
-		<input style="margin-inline-start: auto" type="file" id="file" />
-	</div>
-	<c-source id="source"></c-source>
-</body>
-<script type="module">
-	const source = document.getElementById('source');
+			* { box-sizing: border-box; }
+			body { min-height: 100vh; margin: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+			header { display: grid; gap: 12px; padding: 16px; border-bottom: 1px solid color-mix(in srgb, CanvasText 18%, transparent); background: color-mix(in srgb, Canvas 94%, CanvasText); }
+			.heading, .controls, .group { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+			.heading, .controls { justify-content: space-between; }
+			h1 { font-size: 18px; margin: 0; }
+			.subtitle, footer { font-size: 12px; color: color-mix(in srgb, CanvasText 68%, transparent); }
+			button, input { font: inherit; }
+			button, .file, input[type='search'], input[type='text'] { min-height: 34px; border: 1px solid color-mix(in srgb, CanvasText 24%, transparent); border-radius: 6px; background: Canvas; color: CanvasText; }
+			button, .file { padding: 5px 10px; cursor: pointer; }
+			button:hover { background: color-mix(in srgb, Canvas 88%, CanvasText); }
+			input[type='search'], input[type='text'] { width: 150px; padding: 5px 8px; }
+			label { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; white-space: nowrap; }
+			.file { position: relative; overflow: hidden; }
+			.file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+			main { min-height: 0; }
+			c-source { display: block; height: 100%; min-height: 320px; padding: 12px 16px; font: 14px/21px ui-monospace, SFMono-Regular, Consolas, monospace; tab-size: 4; background: Canvas; color: CanvasText; }
+			c-source::part(gutters) { background: color-mix(in srgb, Canvas 95%, CanvasText); color: color-mix(in srgb, CanvasText 56%, transparent); }
+			c-source::part(marker) { color: #e65100; }
+			footer { display: flex; justify-content: space-between; gap: 16px; padding: 7px 16px; border-top: 1px solid color-mix(in srgb, CanvasText 18%, transparent); }
+			@media (max-width: 720px) {
+				header { padding: 12px; }
+				.controls > .group { width: 100%; }
+				input[type='search'], input[type='text'] { flex: 1; width: 110px; }
+			}
+			@media (prefers-color-scheme: dark) {
+				:root {
+					--ide-keyword: rgba(255, 110, 64, 1);
+					--ide-operator: rgba(255, 204, 188, 1);
+					--ide-number: rgba(255, 158, 128, 1);
+					--ide-variable: rgba(236, 239, 241, 1);
+					--ide-comment: rgba(207, 216, 220, 1);
+					--ide-string: rgba(255, 158, 128, 1);
+				}
+			}
+		</style>
+	</head>
+	<body>
+		<header>
+			<div class="heading">
+				<div><h1>@cxl/ui.source</h1><div class="subtitle">Virtualized source editing with IDE-grade features</div></div>
+				<div class="group">
+					<button id="sample" type="button">Sample</button>
+					<button id="large" type="button">100k lines</button>
+					<label class="file">Open file<input id="file" type="file" aria-label="Open local file" /></label>
+				</div>
+			</div>
+			<div class="controls">
+				<div class="group">
+					<input id="find" type="search" value="source" aria-label="Find" />
+					<input id="replace" type="text" value="editor" aria-label="Replace" />
+					<button id="previous" type="button">Previous</button>
+					<button id="next" type="button">Next</button>
+					<button id="replace-next" type="button">Replace</button>
+					<button id="replace-all" type="button">Replace all</button>
+				</div>
+				<div class="group">
+					<button id="undo" type="button">Undo</button>
+					<button id="redo" type="button">Redo</button>
+					<label><input id="highlight" type="checkbox" checked /> Highlight</label>
+					<label><input id="lines" type="checkbox" checked /> Lines</label>
+					<label><input id="markers" type="checkbox" checked /> Markers</label>
+					<label><input id="fat-cursor" type="checkbox" /> Fat cursor</label>
+				</div>
+			</div>
+		</header>
+		<main><c-source id="source" aria-label="Source editor"></c-source></main>
+		<footer><span id="status" role="status">Ready</span><span id="position">Ln 1, Col 1 · 0 selected</span></footer>
+		<script type="module">
+			import { gutterMarkers, lineNumbers } from './index.bundle.js';
 
-	document.getElementById('file').addEventListener('change', async event => {
-		const file = event.target.files?.[0];
-		if (file) {
-			const text = await file.text();
-			source.setText(text);
-		}
-	});
+			const sample = `import { Source } from '@cxl/ui.source';
 
-	await fetch('../../source/index.ts')
-		.then(r => r.text())
-		.then(r => source.setText(r));
-</script>
+const source = new Source();
+source.setText('Fast editing for very large files');
+source.search.find('large');
+source.history.undo();
+
+document.body.append(source);`;
+			const keywords = new Set(['const', 'export', 'from', 'import', 'new', 'return']);
+			const tokenizer = value => {
+				let index = 0;
+				let line = 0;
+				const token = (kind, start, end, tokenLine = line) => ({ kind, start, end, line: tokenLine, source: value });
+				return {
+					backtrack(current) { index = current.end; line = current.line; },
+					next() {
+						while (/\s/.test(value[index] ?? '')) if (value[index++] === '\n') line++;
+						const start = index;
+						const tokenLine = line;
+						if (index >= value.length) return token('eof', index, index);
+						if (value.startsWith('//', index)) {
+							while (index < value.length && value[index] !== '\n') index++;
+							return token('comment', start, index, tokenLine);
+						}
+						if (value[index] === "'" || value[index] === '"') {
+							const quote = value[index++];
+							while (index < value.length && value[index] !== quote) index++;
+							if (value[index] === quote) index++;
+							return token('string', start, index, tokenLine);
+						}
+						if (/\d/.test(value[index] ?? '')) {
+							while (/\d/.test(value[index] ?? '')) index++;
+							return token('number', start, index, tokenLine);
+						}
+						if (/[A-Za-z_$]/.test(value[index] ?? '')) {
+							while (/[\w$]/.test(value[index] ?? '')) index++;
+							return token(keywords.has(value.slice(start, index)) ? 'keyword' : 'identifier', start, index, tokenLine);
+						}
+						index++;
+						return token('punctuation', start, index, tokenLine);
+					},
+				};
+			};
+
+			const source = document.getElementById('source');
+			const status = document.getElementById('status');
+			const position = document.getElementById('position');
+			const find = document.getElementById('find');
+			const replace = document.getElementById('replace');
+			const lineGutter = lineNumbers();
+			const markerGutter = gutterMarkers();
+			const marker = document.createElement('span');
+			marker.part.add('marker');
+			marker.textContent = '●';
+			marker.title = 'Example diagnostic marker';
+			markerGutter.setGutterMarker(3, 'diagnostics', marker);
+
+			const updateGutters = () => {
+				const gutters = [];
+				if (document.getElementById('lines').checked) gutters.push(lineGutter);
+				if (document.getElementById('markers').checked) gutters.push(markerGutter);
+				source.gutters = gutters;
+			};
+			const updatePosition = () => {
+				const cursor = source.cursor.position();
+				const selection = source.selection.range();
+				position.textContent = `Ln ${cursor.line + 1}, Col ${cursor.ch + 1} · ${selection.end - selection.start} selected`;
+			};
+			const setText = (value, message) => {
+				source.setText(value);
+				status.textContent = message;
+				updatePosition();
+			};
+			const options = reverse => ({ caseSensitive: false, reverse });
+			const reportMatch = range => {
+				status.textContent = range ? `Match ${range.start}–${range.end}` : 'No match';
+				updatePosition();
+			};
+
+			const themeColor = name =>
+				getComputedStyle(document.documentElement)
+					.getPropertyValue(`--ide-${name}`)
+					.trim();
+			source.tokenizer = tokenizer;
+			source.tokenColors = {
+				comment: themeColor('comment'),
+				identifier: themeColor('variable'),
+				keyword: themeColor('keyword'),
+				number: themeColor('number'),
+				punctuation: themeColor('operator'),
+				string: themeColor('string'),
+			};
+			updateGutters();
+			setText(sample, 'Sample loaded');
+
+			document.getElementById('sample').addEventListener('click', () => setText(sample, 'Sample loaded'));
+			document.getElementById('large').addEventListener('click', () => {
+				const value = Array.from({ length: 100_000 }, (_, line) => `${String(line + 1).padStart(6, '0')}  const value${line} = ${line};`).join('\n');
+				setText(value, `Loaded 100,000 lines · ${(value.length / 1_000_000).toFixed(1)} MB`);
+			});
+			document.getElementById('file').addEventListener('change', async event => {
+				const file = event.target.files?.[0];
+				if (file) setText(await file.text(), `${file.name} · ${(file.size / 1000).toFixed(1)} kB`);
+			});
+			document.getElementById('previous').addEventListener('click', () => reportMatch(source.search.find(find.value, options(true))));
+			document.getElementById('next').addEventListener('click', () => reportMatch(source.search.find(find.value, options(false))));
+			document.getElementById('replace-next').addEventListener('click', () => {
+				source.search.replaceNext(find.value, replace.value, options(false));
+				status.textContent = 'Replaced next match';
+			});
+			document.getElementById('replace-all').addEventListener('click', () => {
+				source.search.replaceAll(find.value, replace.value, options(false));
+				status.textContent = 'Replaced all matches';
+			});
+			document.getElementById('undo').addEventListener('click', () => { source.history.undo(); status.textContent = 'Undo'; });
+			document.getElementById('redo').addEventListener('click', () => { source.history.redo(); status.textContent = 'Redo'; });
+			document.getElementById('highlight').addEventListener('change', event => {
+				source.tokenizer = event.target.checked ? tokenizer : undefined;
+				status.textContent = event.target.checked ? 'Highlighting on' : 'Highlighting off';
+			});
+			document.getElementById('lines').addEventListener('change', updateGutters);
+			document.getElementById('markers').addEventListener('change', updateGutters);
+			document.getElementById('fat-cursor').addEventListener('change', event => {
+				source.fatCursor = event.target.checked;
+				status.textContent = event.target.checked ? 'Block cursor' : 'Text cursor';
+			});
+			source.changes.subscribe(() => { status.textContent = `${source.getText().length.toLocaleString()} characters`; updatePosition(); });
+			source.addEventListener('click', updatePosition);
+			source.addEventListener('keyup', updatePosition);
+		</script>
+	</body>
+</html>

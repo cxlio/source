@@ -35,10 +35,14 @@ export interface SourceGutterMarkers extends SourceGutter {
 	): void;
 }
 
+function createPart(name: string, ...children: Node[]) {
+	const element = create('div', undefined, ...children);
+	element.setAttribute('part', name);
+	return element;
+}
+
 class LineNumbers implements SourceGutter {
-	readonly element = create('div', {
-		part: 'gutter line-numbers',
-	});
+	readonly element = createPart('gutter line-numbers');
 
 	constructor() {
 		this.element.ariaHidden = 'true';
@@ -48,10 +52,8 @@ class LineNumbers implements SourceGutter {
 		this.element.style.width = `${String(lineCount).length + 1}ch`;
 		this.element.replaceChildren(
 			...lines.map(line => {
-				const element = create('div', {
-					part: 'gutter-element line-number',
-					textContent: String(line.row + 1),
-				});
+				const element = createPart('gutter-element line-number');
+				element.textContent = String(line.row + 1);
 				place(element, line, offset);
 				return element;
 			}),
@@ -60,7 +62,7 @@ class LineNumbers implements SourceGutter {
 }
 
 class GutterMarkers implements SourceGutterMarkers {
-	readonly element = create('div', { part: 'gutter-group markers' });
+	readonly element = createPart('gutter-group markers');
 	readonly changes: Observable<unknown>;
 	readonly #cells = new WeakMap<HTMLElement, HTMLElement>();
 	readonly #columns = new Map<string, HTMLElement>();
@@ -114,7 +116,7 @@ class GutterMarkers implements SourceGutterMarkers {
 				if (!marker) continue;
 				let cell = this.#cells.get(marker);
 				if (!cell) {
-					cell = create('div', { part: 'gutter-element' }, marker);
+					cell = createPart('gutter-element', marker);
 					this.#cells.set(marker, cell);
 				}
 				place(cell, line, offset);
@@ -148,9 +150,7 @@ class GutterMarkers implements SourceGutterMarkers {
 	#column(name: string) {
 		let column = this.#columns.get(name);
 		if (!column) {
-			column = create('div', {
-				part: `gutter ${name}`,
-			});
+			column = createPart(`gutter ${name}`);
 			column.dataset.gutter = name;
 			this.#columns.set(name, column);
 		}
