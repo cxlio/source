@@ -192,6 +192,8 @@ export default spec('@cxl/ui.source', a => {
 		it.testElement('loads as a self-contained static page', async (a: TestApi) => {
 			const path = '../../docs/demo/index.html';
 			const frame = a.element('iframe');
+			frame.width = '240';
+			frame.height = '800';
 			const loaded = new Promise<void>(resolve =>
 				frame.addEventListener('load', () => resolve(), { once: true }),
 			);
@@ -206,6 +208,21 @@ export default spec('@cxl/ui.source', a => {
 			);
 			const source = editor as HTMLElement &
 				Pick<Source, 'getText' | 'selection'>;
+			frame.scrollIntoView({ block: 'center' });
+			source.scrollIntoView({ block: 'center' });
+			await a.sleep(75);
+			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas');
+			a.assert(canvas, 'demo editor canvas exists');
+			const bounds = paintedBounds(canvas);
+			a.assert(bounds, 'wrapped text is painted');
+			const lineHeight = parseFloat(
+				frame.contentWindow?.getComputedStyle(source).lineHeight ?? '0',
+			);
+			const paintedHeight = bounds.bottom - bounds.top;
+			a.ok(
+				paintedHeight > lineHeight,
+				`wrapped rows span ${paintedHeight}px (${bounds.top}-${bounds.bottom}) at ${lineHeight}px line height`,
+			);
 			const find = frame.contentDocument?.querySelector<HTMLInputElement>('#find');
 			const replace =
 				frame.contentDocument?.querySelector<HTMLInputElement>('#replace');
@@ -692,6 +709,7 @@ export default spec('@cxl/ui.source', a => {
 					source.shadowRoot?.activeElement === target,
 				'native input focused',
 			);
+			a.equal(getComputedStyle(source).outlineStyle, 'none');
 			a.equal(await editorValue(a, target), 'Xone');
 
 			const pasted = new DataTransfer();

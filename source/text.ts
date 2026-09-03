@@ -178,6 +178,7 @@ export function textCanvas(host: HTMLElement) {
 			measurementReady = true;
 		}
 		let lineY = -1;
+		let lineTop = -1;
 		let lineHeight = 0;
 		let hasTabs = false;
 		let rect;
@@ -193,9 +194,10 @@ export function textCanvas(host: HTMLElement) {
 
 			const x = rect.x - hostRect.x;
 
-			if (lineY === -1) {
-				lineY = rect.y - measureRect.y;
-			} else if (x === 0) break;
+			if (lineTop === -1) {
+				lineTop = rect.y;
+				lineY = lineTop - measureRect.y;
+			} else if (rect.y !== lineTop) break;
 
 			if (charRange.toString() === '\t') hasTabs = true;
 

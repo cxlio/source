@@ -305,11 +305,6 @@ export class Source extends Code {
 	user-select: none;
 	-webkit-user-select: none;
 }
-:host(:focus-visible),
-:host(:focus-within) {
-	outline: 2px solid Highlight;
-	outline-offset: 2px;
-}
 canvas {
 	position: absolute; top: 0; left: 0;
 	pointer-events: none;
