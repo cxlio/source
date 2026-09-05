@@ -829,46 +829,41 @@ canvas {
 		refresh.next({ dataLength: this.buffer.getLineCount() });
 
 		return merge(
-			onFontsReady().switchMap(() =>
-				merge(
-					onResize(host).raf(() => {
-						if (host.clientHeight > 0 && host.clientWidth > 0)
-							text.resize();
-					}),
-					onResize(this.gutterHost).raf(() => {
-						const width = this.gutterHost.offsetWidth;
-						host.style.setProperty('--source-gutter-width', `${width}px`);
-						text.resize();
-						refresh.next({ dataLength: this.buffer.getLineCount() });
-					}),
-					virtualScroll({
-						host,
-						scrollElement: this,
-						scrollContainer: this.shadowRoot ?? undefined,
-						refresh,
-						render: (index, order) => {
-							if (order === 0) text.begin(index);
-							return text.renderLine(
-								index,
-								this.buffer.getLine(index),
-								this.highlight.getLine(index),
-							);
-						},
-						dataLength: this.buffer.getLineCount(),
-						translate: false,
-					}).tap(event => {
-						this.offsetY = event.offset;
-						text.commit(event.offset);
-						for (const gutter of this.gutters)
-							gutter.render({
-								lines: text.toRender,
-								lineCount: this.buffer.getLineCount(),
-								offset: event.offset,
-							});
-						this.rendered();
-					}),
-				),
-			),
+			onResize(host).raf(() => {
+				if (host.clientHeight > 0 && host.clientWidth > 0) text.resize();
+			}),
+			onResize(this.gutterHost).raf(() => {
+				const width = this.gutterHost.offsetWidth;
+				host.style.setProperty('--source-gutter-width', `${width}px`);
+				this.resetRenderer();
+			}),
+			virtualScroll({
+				host,
+				scrollElement: this,
+				scrollContainer: this.shadowRoot ?? undefined,
+				refresh,
+				render: (index, order) => {
+					if (order === 0) text.begin(index);
+					return text.renderLine(
+						index,
+						this.buffer.getLine(index),
+						this.highlight.getLine(index),
+					);
+				},
+				dataLength: this.buffer.getLineCount(),
+				translate: false,
+			}).tap(event => {
+				this.offsetY = event.offset;
+				text.commit(event.offset);
+				for (const gutter of this.gutters)
+					gutter.render({
+						lines: text.toRender,
+						lineCount: this.buffer.getLineCount(),
+						offset: event.offset,
+					});
+				this.rendered();
+			}),
+			onFontsReady().tap(() => this.resetRenderer()),
 			onThemeChange.tap(() => {
 				text.updateStyles();
 				refresh.next({ dataLength: this.buffer.getLineCount() });

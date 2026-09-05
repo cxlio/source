@@ -141,7 +141,7 @@ function paintedBounds(canvas: HTMLCanvasElement, width = canvas.width) {
 		top = Math.min(top, y);
 		bottom = Math.max(bottom, y);
 	}
-	return { top, bottom };
+	return bottom < top ? undefined : { top, bottom };
 }
 
 function paintedWidth(canvas: HTMLCanvasElement) {
