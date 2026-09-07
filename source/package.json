@@ -18,5 +18,8 @@
 		"type": "git",
 		"url": "https://github.com/cxlio/source.git",
 		"directory": "source"
+	},
+	"build": {
+		"platform": "browser"
 	}
 }

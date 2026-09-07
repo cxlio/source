@@ -2,8 +2,16 @@
 	"extends": "../tsconfig.json",
 	"compilerOptions": {
 		"outDir": "../dist/source",
-		"lib": ["dom", "es2023", "dom.iterable"]
+		"lib": [
+			"dom",
+			"es2025",
+			"dom.iterable"
+		]
 	},
-	"include": ["*.ts"],
-	"exclude": ["test.ts"]
+	"include": [
+		"*.ts"
+	],
+	"exclude": [
+		"test.ts"
+	]
 }
