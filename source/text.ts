@@ -48,6 +48,11 @@ export interface TextRect {
 	line: number;
 }
 
+export interface TextRangeRect extends TextRect {
+	start: number;
+	end: number;
+}
+
 export type TextCanvas = ReturnType<typeof textCanvas>;
 
 export function getContext() {
@@ -437,9 +442,9 @@ export function textCanvas(host: HTMLElement) {
 	function getSelectionRects(
 		start: TextPosition,
 		end: TextPosition,
-	): TextRect[] {
-		const result: TextRect[] = [];
-		for (const sourceLine of lineCache) {
+	): TextRangeRect[] {
+		const result: TextRangeRect[] = [];
+		for (const sourceLine of toRender) {
 			if (sourceLine.row < start.line || sourceLine.row > end.line)
 				continue;
 			const rangeStart =
@@ -456,6 +461,8 @@ export function textCanvas(host: HTMLElement) {
 					width: 2,
 					height: sourceLine.height,
 					line: sourceLine.row,
+					start: rangeStart,
+					end: rangeEnd,
 				});
 				continue;
 			}
@@ -471,6 +478,8 @@ export function textCanvas(host: HTMLElement) {
 					width: Math.max(2, getCharacterX(part, partEnd) - x),
 					height: part.height,
 					line: sourceLine.row,
+					start: partStart,
+					end: partEnd,
 				});
 			}
 		}
@@ -502,6 +511,7 @@ export function textCanvas(host: HTMLElement) {
 	}
 
 	const { canvas, context: ctx } = getContext();
+	canvas.setAttribute('part', 'text');
 	const textN = new Text();
 	const measureElement = create('div', { id: 'measure' }, textN);
 	const charRange = document.createRange();

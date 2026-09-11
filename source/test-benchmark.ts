@@ -118,6 +118,35 @@ export default spec('Source line rendering benchmarks', s => {
 		);
 	});
 
+	s.test('large-document decorations', async a => {
+		const source = a.element(Source);
+		source.style.cssText =
+			'display:block;width:320px;height:160px;font:12px monospace';
+		source.setText(createLargeSource());
+		await a.sleep(20);
+		let painted = 0;
+		const decorations = source.decorations.create<number>({
+			layer: 'behind-text',
+			paint: ({ fragments }) => {
+				painted += fragments.length;
+			},
+		});
+		const ranges = source.search.findAll('\t');
+		decorations.replaceAll(
+			ranges.map((range, value) => ({ range, value })),
+		);
+		const first = decorations.add({
+			range: ranges[0] ?? { start: 0, end: 0 },
+			value: -1,
+		});
+
+		await a.benchmark(() => {
+			painted = 0;
+			first.invalidate();
+			return painted;
+		}, featureBenchmarkOptions);
+	});
+
 	s.test('wrapped line', async a => {
 		const text = createTextCanvas(a, 120);
 		const value = `start ${'wrapped content '.repeat(12)}end`;

@@ -23,6 +23,12 @@ import { type BufferChange, type BufferPosition } from './buffer.js';
 import { createTextInput, type TextInputUpdate } from './input.js';
 import { Code } from './code.js';
 import { type SourceGutter } from './gutter.js';
+import {
+	sourceDecorations,
+	type SourceDecorationSet,
+	type SourceDecorationsFeature,
+	type SourceRange,
+} from './decoration.js';
 
 export { Code } from './code.js';
 export {
@@ -41,13 +47,21 @@ export {
 	type SourceTokenizer,
 } from './highlight.js';
 
+export {
+	type SourceDecoration,
+	type SourceDecorationFragment,
+	type SourceDecorationHandle,
+	type SourceDecorationLayer,
+	type SourceDecorationLayerOptions,
+	type SourceDecorationPaintContext,
+	type SourceDecorationSet,
+	type SourceDecorationsFeature,
+	type SourceRange,
+} from './decoration.js';
+
 export type SourceChange = BufferChange;
 export type SourcePosition = BufferPosition;
-
-export interface SourceRange {
-	readonly start: number;
-	readonly end: number;
-}
+export type SourceSearchQuery = string | RegExp;
 
 export interface SourceSelectionFeature {
 	range(): SourceRange;
@@ -77,23 +91,24 @@ export interface SourceSearchOptions {
 }
 
 export interface SourceSearchFeature {
-	lastSearch?: string | RegExp;
+	lastSearch?: SourceSearchQuery;
 	lastOptions?: SourceSearchOptions;
 	lastReplace?: string;
 	find(
-		query?: string | RegExp,
+		query?: SourceSearchQuery,
 		options?: SourceSearchOptions,
 	): SourceRange | undefined;
-	findAll(query?: string | RegExp, options?: SourceSearchOptions): SourceRange[];
+	findAll(query?: SourceSearchQuery, options?: SourceSearchOptions): SourceRange[];
 	findNext(): SourceRange | undefined;
 	findPrevious(): SourceRange | undefined;
+	highlight(query?: SourceSearchQuery, options?: SourceSearchOptions): void;
 	replaceNext(
-		query?: string | RegExp,
+		query?: SourceSearchQuery,
 		value?: string,
 		options?: SourceSearchOptions,
 	): void;
 	replaceAll(
-		query?: string | RegExp,
+		query?: SourceSearchQuery,
 		value?: string,
 		options?: SourceSearchOptions,
 	): void;
@@ -111,17 +126,18 @@ interface HistoryRecord {
 }
 
 interface ActiveSearch {
-	query: string | RegExp;
+	query: SourceSearchQuery;
 	caseSensitive?: boolean;
 	range: SourceRange;
 }
 
 const MaxHistoryEntries = 1_000;
 const MaxHistoryText = 16 * 1024 * 1024;
+const DefaultSearchHighlight = 'rgba(255, 210, 0, 0.35)';
 
 function* searchMatches(
 	value: string,
-	query: string | RegExp,
+	query: SourceSearchQuery,
 	caseSensitive?: boolean,
 ): Generator<SourceRange> {
 	if (typeof query === 'string') {
@@ -243,6 +259,7 @@ export class Source extends Code {
 				...this.search.lastOptions,
 				reverse: true,
 			}),
+		highlight: (query, options) => this.highlightSearch(query, options),
 		replaceNext: (
 			query = this.search.lastSearch,
 			value = this.search.lastReplace,
@@ -289,6 +306,62 @@ export class Source extends Code {
 	protected selectionHead = 0;
 	protected selectionSync?: (scroll: boolean) => void;
 	protected readonly text = textCanvas(this.host);
+	protected readonly decorationRenderer = sourceDecorations(
+		this.host,
+		range => {
+			const normalized = this.cursor.range(range.start, range.end);
+			const start = this.buffer.positionAt(normalized.start);
+			const end = this.buffer.positionAt(normalized.end);
+			return this.text.getSelectionRects(start, end).map(fragment => ({
+				...fragment,
+				y: fragment.y + this.offsetY,
+				start: this.buffer.indexAt({
+					line: fragment.line,
+					ch: fragment.start,
+				}),
+				end: this.buffer.indexAt({
+					line: fragment.line,
+					ch: fragment.end,
+				}),
+			}));
+		},
+		() => {
+			const first = this.text.toRender.at(0);
+			const last = this.text.toRender.at(-1);
+			return {
+				start: first
+					? this.buffer.indexAt({ line: first.row, ch: 0 })
+					: 0,
+				end: last
+					? this.buffer.indexAt({
+							line: last.row,
+							ch: last.text.length,
+						})
+					: 0,
+			};
+		},
+	);
+	protected readonly searchDecorations: SourceDecorationSet<undefined> =
+		this.decorations.create({
+			layer: 'behind-text',
+			paint: ({ context, fragments }) => {
+				context.fillStyle = this.searchDecorationColor;
+				context.globalAlpha = this.searchDecorationAlpha;
+				for (const fragment of fragments)
+					context.fillRect(
+						fragment.x,
+						fragment.y,
+						fragment.width,
+						fragment.height,
+					);
+			},
+		});
+	protected searchDecorationAlpha = 1;
+	protected searchDecorationColor = DefaultSearchHighlight;
+	protected searchHighlight?: {
+		query: SourceSearchQuery;
+		caseSensitive?: boolean;
+	};
 	protected readonly undoRecords: HistoryRecord[] = [];
 	protected undoSize = 0;
 
@@ -674,6 +747,10 @@ canvas {
 		this.changes = this.changeSubject;
 	}
 
+	get decorations(): SourceDecorationsFeature {
+		return this.decorationRenderer;
+	}
+
 	protected applyEdit(
 		value: string,
 		range: SourceRange,
@@ -709,7 +786,7 @@ canvas {
 	}
 
 	protected findAllSearch(
-		query: string | RegExp | undefined,
+		query: SourceSearchQuery | undefined,
 		options: SourceSearchOptions = {},
 	) {
 		if (query === undefined) return [];
@@ -719,7 +796,7 @@ canvas {
 	}
 
 	protected findSearch(
-		query: string | RegExp | undefined,
+		query: SourceSearchQuery | undefined,
 		options: SourceSearchOptions = {},
 	) {
 		if (query === undefined) return;
@@ -769,8 +846,39 @@ canvas {
 		return match;
 	}
 
+	protected highlightSearch(
+		query: SourceSearchQuery | undefined,
+		options: SourceSearchOptions = {},
+	) {
+		if (query === undefined || query === '') {
+			this.searchHighlight = undefined;
+			this.searchDecorations.clear();
+			return;
+		}
+		this.updateSearchDecorationStyle();
+		this.searchHighlight = {
+			query,
+			caseSensitive: options.caseSensitive,
+		};
+		this.searchDecorations.replaceAll(
+			[...searchMatches(this.getText(), query, options.caseSensitive)].map(
+				range => ({ range, value: undefined }),
+			),
+		);
+	}
+
 	protected historyRecordSize(record: HistoryRecord) {
 		return record.change.text.length + record.change.removed.length;
+	}
+
+	protected updateSearchDecorationStyle() {
+		const forcedColors = matchMedia('(forced-colors: active)').matches;
+		this.searchDecorationColor =
+			getComputedStyle(this)
+				.getPropertyValue('--cxl-source-search-highlight')
+				.trim() ||
+			(forcedColors ? 'Highlight' : DefaultSearchHighlight);
+		this.searchDecorationAlpha = forcedColors ? 0.35 : 1;
 	}
 
 	protected recordHistory(record: HistoryRecord, coalesce: boolean) {
@@ -823,9 +931,16 @@ canvas {
 	}
 
 	protected override initializeRenderer() {
-		const { host, refresh, text } = this;
-		host.append(this.gutterHost, text.canvas, text.measureElement);
+		const { decorationRenderer, host, refresh, text } = this;
+		host.append(
+			this.gutterHost,
+			decorationRenderer.behindCanvas,
+			text.canvas,
+			decorationRenderer.aboveCanvas,
+			text.measureElement,
+		);
 		this.shadowRoot?.append(host);
+		this.updateSearchDecorationStyle();
 		refresh.next({ dataLength: this.buffer.getLineCount() });
 
 		return merge(
@@ -855,6 +970,7 @@ canvas {
 			}).tap(event => {
 				this.offsetY = event.offset;
 				text.commit(event.offset);
+				decorationRenderer.render();
 				for (const gutter of this.gutters)
 					gutter.render({
 						lines: text.toRender,
@@ -866,6 +982,7 @@ canvas {
 			onFontsReady().tap(() => this.resetRenderer()),
 			onThemeChange.tap(() => {
 				text.updateStyles();
+				this.updateSearchDecorationStyle();
 				refresh.next({ dataLength: this.buffer.getLineCount() });
 			}),
 		);
@@ -883,6 +1000,9 @@ canvas {
 			change.lineEnd,
 			change.lineDelta,
 		);
+		this.decorationRenderer.replaced(change);
+		if (this.searchHighlight)
+			this.highlightSearch(this.searchHighlight.query, this.searchHighlight);
 		this.refresh.next({ dataLength: this.buffer.getLineCount() });
 	}
 
@@ -900,6 +1020,9 @@ canvas {
 	protected override reset() {
 		this.clearHistory();
 		for (const gutter of this.gutters) gutter.reset?.();
+		this.decorationRenderer.reset();
+		if (this.searchHighlight)
+			this.highlightSearch(this.searchHighlight.query, this.searchHighlight);
 		this.selectionAnchor = this.selectionHead = Math.min(
 			this.selectionHead,
 			this.buffer.length,

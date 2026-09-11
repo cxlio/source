@@ -11,6 +11,7 @@ import {
 	gutterMarkers,
 	lineNumbers,
 	type SourceChange,
+	type SourceDecorationFragment,
 } from './index.js';
 import { createTextareaInput } from './input.js';
 import { HitTest } from './hit-test.js';
@@ -304,9 +305,22 @@ export default spec('@cxl/ui.source', a => {
 
 		it.testElement('is the base of the source editor', async a => {
 			const { source } = await createSourceEditor(a, 'alpha');
+			const canvases = source.shadowRoot?.querySelectorAll('canvas');
 
 			a.ok(source instanceof Code);
-			a.equal(source.shadowRoot?.querySelectorAll('canvas').length, 2);
+			a.equal(canvases?.length, 4);
+			a.equal(
+				[...(canvases ?? [])]
+					.map(canvas => canvas.getAttribute('part'))
+					.join(','),
+				'decorations-behind,text,decorations-above,cursor',
+			);
+			a.equal(
+				source.shadowRoot?.querySelectorAll(
+					'canvas[part^="decorations-"][aria-hidden="true"]',
+				).length,
+				2,
+			);
 			a.equal(source.getAttribute('role'), 'textbox');
 		});
 	});
@@ -342,7 +356,7 @@ export default spec('@cxl/ui.source', a => {
 				? source
 				: (source.shadowRoot?.querySelector('textarea') ?? source);
 			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>(
-				'canvas',
+				'canvas[part="text"]',
 			);
 			const body = source.shadowRoot?.querySelector<HTMLElement>('#body');
 			const measure = source.shadowRoot?.querySelector<HTMLElement>('#measure');
@@ -472,6 +486,112 @@ export default spec('@cxl/ui.source', a => {
 				{ start: 1, end: 1 },
 				{ start: 2, end: 2 },
 			]);
+		});
+
+		it.testElement('paints visible range decorations through custom painters', async (a: TestApi) => {
+			const { source } = await createSourceEditor(
+				a,
+				`${'wrapped '.repeat(12)}\nsecond line`,
+			);
+			const painted: SourceDecorationFragment[][] = [];
+			const decorations = source.decorations.create<string>({
+				layer: 'above-text',
+				paint: ({ fragments }) => painted.push([...fragments]),
+			});
+			const decoration = decorations.add({
+				range: { start: 0, end: 108 },
+				value: 'match',
+			});
+			await a.sleep(20);
+
+			const wrapped: SourceDecorationFragment[] | undefined = painted.at(-1);
+			a.assert(wrapped, 'decoration painted');
+			a.ok(wrapped.length > 1, 'wrapped range has multiple fragments');
+			a.ok(
+				wrapped.some(fragment => fragment.line === 1),
+				'multiline range includes each line',
+			);
+
+			painted.length = 0;
+			decoration.update({
+				range: { start: 108, end: 97 },
+				value: 'updated',
+			});
+			await a.sleep(20);
+			a.equal(painted.at(-1)?.at(0)?.line, 1);
+
+			painted.length = 0;
+			source.edit.replace('prefix ', { start: 0, end: 0 });
+			await a.sleep(20);
+			a.equal(painted.at(-1)?.at(0)?.start, 104);
+
+			painted.length = 0;
+			decoration.remove();
+			await a.sleep(20);
+			a.equal(painted.length, 0);
+
+			const intersected = decorations.add({
+				range: { start: 0, end: 7 },
+				value: 'intersected',
+			});
+			painted.length = 0;
+			source.edit.replace('x', { start: 2, end: 3 });
+			await a.sleep(20);
+			a.equal(painted.length, 0, 'intersected decoration removed');
+			intersected.invalidate();
+			a.equal(painted.length, 0, 'removed handle remains inactive');
+		});
+
+		it.testElement('only invokes decoration painters for the viewport', async a => {
+			const value = Array.from(
+				{ length: 200 },
+				(_, line) => `line ${line}`,
+			).join('\n');
+			const { source } = await createSourceEditor(a, value);
+			const painted: string[] = [];
+			const decorations = source.decorations.create<string>({
+				layer: 'behind-text',
+				paint: ({ value }) => painted.push(value),
+			});
+			decorations.replaceAll([
+				{ range: { start: 0, end: 6 }, value: 'first' },
+				{
+					range: {
+						start: value.lastIndexOf('line 199'),
+						end: value.length,
+					},
+					value: 'last',
+				},
+			]);
+			await a.sleep(20);
+			a.ok(painted.includes('first'));
+			a.ok(!painted.includes('last'));
+
+			painted.length = 0;
+			source.scrollTop = source.scrollHeight;
+			await a.sleep(50);
+			a.ok(!painted.includes('first'));
+			a.ok(painted.includes('last'));
+		});
+
+		it.testElement('highlights and clears all visible search matches', async (a: TestApi) => {
+			const { source } = await createSourceEditor(
+				a,
+				'alpha beta alpha gamma alpha',
+			);
+			const canvas: HTMLCanvasElement | null | undefined =
+				source.shadowRoot?.querySelector<HTMLCanvasElement>(
+					'canvas[part="decorations-behind"]',
+				);
+			a.assert(canvas, 'search decoration canvas exists');
+
+			source.search.highlight('alpha');
+			await a.sleep(20);
+			a.ok(paintedWidth(canvas) > 0, 'search matches painted');
+
+			source.search.highlight();
+			await a.sleep(20);
+			a.equal(paintedWidth(canvas), 0, 'search matches cleared');
 		});
 
 		it.testElement('replaces the next and all search matches', async a => {
@@ -621,7 +741,9 @@ export default spec('@cxl/ui.source', a => {
 
 		it.testElement('keeps rendering when pasted text breaks a tokenizer', async a => {
 			const { source, target } = await createSourceEditor(a, 'alpha\nbeta');
-			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas');
+			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>(
+				'canvas[part="text"]',
+			);
 			const pasted = new DataTransfer();
 			pasted.setData('text/plain', '!pasted\nsecond');
 			let error = '';
@@ -781,7 +903,7 @@ export default spec('@cxl/ui.source', a => {
 		it.testElement('keep text fixed through first focus and edit', async (a: TestApi) => {
 			const { source, target } = await createSourceEditor(a, 'MMMM');
 			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>(
-				'canvas',
+				'canvas[part="text"]',
 			);
 			a.assert(canvas, 'editor canvas exists');
 			const context = canvas.getContext('2d');
@@ -801,7 +923,9 @@ export default spec('@cxl/ui.source', a => {
 
 		it.testElement('only paints the caret while focused', async (a: TestApi) => {
 			const { source, target } = await createSourceEditor(a, 'alpha');
-			const canvas = source.shadowRoot?.querySelectorAll('canvas')[1];
+			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>(
+				'canvas[part="cursor"]',
+			);
 			a.assert(canvas, 'caret canvas exists');
 
 			a.ok(!isPainted(canvas, 0, canvas.height), 'caret hidden before focus');
@@ -818,7 +942,9 @@ export default spec('@cxl/ui.source', a => {
 
 		it.testElement('supports a fat cursor', async (a: TestApi) => {
 			const { source, target } = await createSourceEditor(a, 'alpha');
-			const canvas = source.shadowRoot?.querySelectorAll('canvas')[1];
+			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>(
+				'canvas[part="cursor"]',
+			);
 			a.assert(canvas, 'caret canvas exists');
 
 			await editorAction(a, target, 'press', 'ArrowRight');
@@ -854,7 +980,7 @@ export default spec('@cxl/ui.source', a => {
 			const { source, target } = await createSourceEditor(a, 'ABCDE');
 			const body = source.shadowRoot?.querySelector<HTMLElement>('#body');
 			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>(
-				'canvas',
+				'canvas[part="text"]',
 			);
 			a.assert(body && canvas, 'editor rendering surface exists');
 			const rect = body.getBoundingClientRect();
@@ -929,7 +1055,7 @@ export default spec('@cxl/ui.source', a => {
 			const { source, target } = await createSourceEditor(a, 'ABCDE');
 			const body = source.shadowRoot?.querySelector<HTMLElement>('#body');
 			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>(
-				'canvas',
+				'canvas[part="text"]',
 			);
 			a.assert(body && canvas, 'editor rendering surface exists');
 			const rect = body.getBoundingClientRect();

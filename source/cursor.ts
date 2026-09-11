@@ -87,6 +87,7 @@ export function sourceCursor(host: Element) {
 	}
 
 	const { canvas, context: ctx } = getContext();
+	canvas.setAttribute('part', 'cursor');
 	const options: CursorOptions = { type: 'text', interval: 500 };
 	const textCursorWidth = window.devicePixelRatio >= 2 ? 2 : 1;
 
