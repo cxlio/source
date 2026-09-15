@@ -1292,9 +1292,10 @@ export default spec('@cxl/ui.source', a => {
 			);
 		});
 
-		it.should('commit paints a complete line to the canvas', a => {
+		it.should('commit paints a complete line to the canvas', (a: TestApi) => {
 			const tc = createTextCanvas(a);
-			const ctx = tc.canvas.getContext('2d')!;
+			const ctx = tc.canvas.getContext('2d');
+			a.assert(ctx, 'canvas context exists');
 
 			tc.begin(0);
 			tc.renderLine(0, 'A');
