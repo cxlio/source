@@ -104,9 +104,25 @@ export class Buffer {
 	}
 
 	indexAt({ line, ch }: BufferPosition) {
-		line = Math.max(0, Math.min(line | 0, this.getLineCount() - 1));
+		line = this.#clampLine(line);
 		const [start, end] = this.#lineBounds(line);
-		return Math.max(start, Math.min(start + Math.max(0, ch), end));
+		const offset =
+			ch === Infinity
+				? end - start
+				: Number.isFinite(ch)
+					? Math.max(0, Math.trunc(ch))
+					: 0;
+		return Math.min(start + offset, end);
+	}
+
+	lineRange(from: number, to = from) {
+		from = this.#clampLine(from);
+		to = this.#clampLine(to);
+		if (from > to) [from, to] = [to, from];
+		return {
+			start: this.#lineBounds(from)[0],
+			end: this.#lineBounds(to)[1],
+		};
 	}
 
 	insert(index: number, text: string) {
@@ -202,6 +218,15 @@ export class Buffer {
 		if (index === Infinity) return this.length;
 		if (!Number.isFinite(index)) return 0;
 		return Math.max(0, Math.min(Math.trunc(index), this.length));
+	}
+
+	#clampLine(line: number) {
+		if (line === Infinity) return this.getLineCount() - 1;
+		if (!Number.isFinite(line)) return 0;
+		return Math.max(
+			0,
+			Math.min(Math.trunc(line), this.getLineCount() - 1),
+		);
 	}
 
 	#countLineBreaksBefore(index: number) {

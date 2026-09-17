@@ -1,4 +1,5 @@
 import { spec, type TestApi } from '@cxl/spec';
+import { ScannerApi, type Scanner, type Token } from '@cxl/gbc.sdk';
 import { Buffer } from './buffer.js';
 import { Code } from './code.js';
 import { gutterMarkers, Source } from './index.js';
@@ -11,6 +12,24 @@ const ViewportLineCount = 60;
 const MarkerCount = 10_000;
 const benchmarkOptions = { warmup: 250, sampleTime: 50, samples: 30 };
 const featureBenchmarkOptions = { warmup: 20, sampleTime: 20, samples: 10 };
+
+const navigationScanner: Scanner<Token<string>> = source => {
+	const api = ScannerApi({ source });
+	return {
+		backtrack: api.backtrack,
+		next() {
+			api.skipWhitespace();
+			if (api.eof()) return api.tk('eof', 0);
+			return api.tk(
+				'word',
+				api.matchWhile(
+					character =>
+						character !== ' ' && character !== '\n' && character !== '\t',
+				),
+			);
+		},
+	};
+};
 
 function createLargeSource(lineCount = LineCount) {
 	return Array.from(
@@ -116,6 +135,23 @@ export default spec('Source line rendering benchmarks', s => {
 			() => source.search.findAll('missing value').length,
 			featureBenchmarkOptions,
 		);
+	});
+
+	s.test('large-document cursor navigation', async a => {
+		const source = a.element(Source);
+		source.setText(createLargeSource(HistoryLineCount));
+		source.tokenizer = navigationScanner;
+		await a.sleep(100);
+		a.ok(
+			Boolean(source.getTokenAt(0)),
+			'tokenizer completed a navigation snapshot',
+		);
+		let token = 0;
+
+		await a.benchmark(() => {
+			source.cursorToken.go(token++ % HistoryLineCount);
+			return source.cursorToken.index;
+		}, featureBenchmarkOptions);
 	});
 
 	s.test('large-document decorations', async a => {

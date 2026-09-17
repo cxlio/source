@@ -451,6 +451,98 @@ export default spec('@cxl/ui.source', a => {
 			a.equal(cursor.index, source.getText().length);
 		});
 
+		it.testElement('navigates horizontal and line cursors', async a => {
+			const { source } = await createSourceEditor(a, 'one\n\nthree');
+
+			source.cursor.go(2);
+			a.equal(source.cursorX.index, 2);
+			source.cursorX.next();
+			source.cursorX.next();
+			a.equalValues(source.cursor.position(), { line: 1, ch: 0 });
+			source.cursorX.previous();
+			a.equalValues(source.cursor.position(), { line: 0, ch: 3 });
+			a.equalValues(source.cursorX.range(3, 1), { start: 1, end: 3 });
+			source.cursorX.goEnd();
+			a.equal(source.cursor.index, 3);
+			source.cursorX.goStart();
+			a.equal(source.cursor.index, 0);
+			source.cursorX.nextPage();
+			a.equal(source.cursor.index, 3);
+			source.cursorX.previousPage();
+			a.equal(source.cursor.index, 0);
+
+			source.cursorY.go(2);
+			a.equal(source.cursorY.index, 2);
+			a.equal(source.cursor.index, 5);
+			a.equalValues(source.cursorY.range(2, 0), { start: 0, end: 10 });
+			a.equalValues(source.cursorY.range(1), { start: 4, end: 4 });
+			source.cursorY.go(-1);
+			a.equal(source.cursorY.index, 0);
+			source.cursorY.go(Infinity);
+			a.equal(source.cursorY.index, 2);
+			source.cursorY.goStart();
+			source.cursorY.nextPage();
+			a.equal(source.cursorY.index, 2);
+			source.cursorY.previousPage();
+			a.equal(source.cursorY.index, 0);
+			a.equal(source.cursorY.getVisibleFirst(), 0);
+
+			source.cursor.goEnd();
+			source.cursor.previous();
+			a.equal(source.cursor.index, 9);
+			source.cursor.goStart();
+			source.cursor.next();
+			source.cursor.nextPage();
+			a.equal(source.cursor.index, 10);
+			source.cursor.previousPage();
+			a.equal(source.cursor.index, 0);
+
+			source.setText('one\r\ntwo');
+			source.cursor.go(3);
+			source.cursorX.next();
+			a.equalValues(source.cursor.position(), { line: 1, ch: 0 });
+			source.cursorX.previous();
+			a.equal(source.cursor.index, 3);
+		});
+
+		it.testElement('navigates tokenizer ranges and tolerates missing data', async a => {
+			const { source } = await createSourceEditor(a, 'alpha 12 beta');
+			const tokenCursor = source.cursorToken;
+
+			a.equal(tokenCursor.index, 0);
+			a.equalValues(tokenCursor.range(), { start: 0, end: 0 });
+			tokenCursor.next();
+			a.equal(source.cursor.index, 0);
+
+			source.tokenizer = testScanner;
+			await a.sleep(20);
+			a.equalValues(tokenCursor.range(), { start: 0, end: 5 });
+			tokenCursor.next();
+			a.equal(source.cursor.index, 6);
+			a.equal(tokenCursor.index, 1);
+			a.equalValues(tokenCursor.range(2, 1), { start: 6, end: 13 });
+			tokenCursor.goEnd();
+			a.equal(source.cursor.index, source.getText().length);
+			tokenCursor.previous();
+			a.equal(source.cursor.index, 9);
+			tokenCursor.previousPage();
+			a.equal(source.cursor.index, 0);
+			tokenCursor.nextPage();
+			a.equal(source.cursor.index, source.getText().length);
+			tokenCursor.goStart();
+			a.equal(source.cursor.index, 0);
+
+			source.edit.replace('', { start: 5, end: source.getText().length });
+			tokenCursor.goEnd();
+			a.ok(source.cursor.index <= source.getText().length);
+			source.tokenizer = undefined;
+			await a.sleep(20);
+			const index = source.cursor.index;
+			tokenCursor.previousPage();
+			a.equal(source.cursor.index, index);
+			a.equalValues(tokenCursor.range(), { start: index, end: index });
+		});
+
 		it.testElement('finds strings with direction wrap and case options', async a => {
 			const { source } = await createSourceEditor(
 				a,
@@ -965,6 +1057,21 @@ export default spec('@cxl/ui.source', a => {
 			a.equal(await editorValue(a, target), 'one\ntwo\n!three');
 		});
 
+		it.testElement('moves the line cursor across wrapped visual rows', async a => {
+			const { source } = await createSourceEditor(
+				a,
+				`${'wrapped '.repeat(12)}\nsecond`,
+			);
+
+			source.cursor.goStart();
+			source.cursorY.next();
+			const wrapped = source.cursor.position();
+			a.equal(wrapped.line, 0);
+			a.ok(wrapped.ch > 0, 'cursor advances within the wrapped line');
+			source.cursorY.previous();
+			a.equal(source.cursor.index, 0);
+		});
+
 		it.testElement('scroll the caret into view during page navigation', async a => {
 			const { source, target } = await createSourceEditor(
 				a,
@@ -974,6 +1081,7 @@ export default spec('@cxl/ui.source', a => {
 			await editorAction(a, target, 'press', 'PageDown');
 			await a.sleep(50);
 			a.ok(source.scrollTop > 0, 'caret navigation scrolls the viewport');
+			a.ok(source.cursorY.getVisibleFirst() > 0, 'visible first line updates');
 		});
 
 		it.testElement('select text with a real pointer drag', async (a: TestApi) => {
@@ -1191,6 +1299,12 @@ export default spec('@cxl/ui.source', a => {
 			a.equal(buffer.indexAt({ line: 1, ch: 2 }), 7);
 			a.equal(buffer.indexAt({ line: 0, ch: Infinity }), 3);
 			a.equal(buffer.indexAt({ line: 20, ch: Infinity }), buffer.length);
+			a.equal(buffer.indexAt({ line: Number.NaN, ch: Number.NaN }), 0);
+			a.equalValues(buffer.lineRange(1), { start: 5, end: 10 });
+			a.equalValues(buffer.lineRange(Infinity, 0), {
+				start: 0,
+				end: buffer.length,
+			});
 		});
 
 		it.should('insert delete and replace across pieces', a => {

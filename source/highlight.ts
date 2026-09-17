@@ -27,6 +27,7 @@ interface BucketState {
 export class SourceHighlight {
 	#frame = 0;
 	#lines = new Map<number, SourceTokenSpan[]>();
+	#navigationTokens: SourceToken[] = [];
 	#tokens: SourceToken[] = [];
 	#version = 0;
 
@@ -47,16 +48,21 @@ export class SourceHighlight {
 		cancelAnimationFrame(this.#frame);
 		this.#frame = 0;
 		this.#tokens = this.#tokens.filter(token => token.end <= retain);
+		this.#navigationTokens = this.#tokens.filter(
+			token => token.start >= 0 && token.end > token.start,
+		);
 		for (const line of this.#lines.keys())
 			if (line >= retainLine) this.#lines.delete(line);
 		if (!tokenizer) {
 			this.#tokens = [];
+			this.#navigationTokens = [];
 			this.#lines.clear();
 			this.changed(true, this.#tokens);
 			return;
 		}
 
 		let iterator: Generator<SourceToken> | undefined;
+		const navigationTokens: SourceToken[] = [];
 		const tokens: SourceToken[] = [];
 		const lines = new Map<number, SourceTokenSpan[]>();
 		const bucket = { line: -1, start: 0, end: 0 };
@@ -79,6 +85,12 @@ export class SourceHighlight {
 					if (result.done) break;
 					const token = result.value;
 					tokens.push(token);
+					if (
+						token.start >= 0 &&
+						token.end > token.start &&
+						token.end <= source.length
+					)
+						navigationTokens.push(token);
 					this.#bucket(source, lines, token, bucket);
 					if (!committed && token.end >= retain) committed = true;
 				} while (performance.now() < deadline);
@@ -89,6 +101,7 @@ export class SourceHighlight {
 			if (version !== this.#version) return;
 			if (committed || done) {
 				this.#tokens = tokens;
+				this.#navigationTokens = navigationTokens;
 				this.#lines = lines;
 				this.changed(done, this.#tokens);
 			}
@@ -102,6 +115,10 @@ export class SourceHighlight {
 
 	getLine(line: number) {
 		return this.#lines.get(line) ?? [];
+	}
+
+	getNavigationTokens(): readonly SourceToken[] {
+		return this.#navigationTokens;
 	}
 
 	getTokenAt(index: number) {

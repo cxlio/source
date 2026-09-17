@@ -72,12 +72,25 @@ export interface SourceEditFeature {
 	replace(value: string, range?: SourceRange): SourceChange;
 }
 
-export interface SourceCursorFeature {
+export interface SourceCursorNavigationFeature {
 	readonly index: number;
 	go(index: number): void;
+	range(from?: number, to?: number): SourceRange;
+	goStart(): void;
+	goEnd(): void;
+	next(): void;
+	previous(): void;
+	nextPage(): void;
+	previousPage(): void;
+}
+
+export interface SourceCursorFeature extends SourceCursorNavigationFeature {
 	indexAt(position: SourcePosition): number;
 	position(index?: number): SourcePosition;
-	range(from?: number, to?: number): SourceRange;
+}
+
+export interface SourceCursorYFeature extends SourceCursorNavigationFeature {
+	getVisibleFirst(): number;
 }
 
 export interface SourceHistoryFeature {
@@ -192,6 +205,72 @@ export class Source extends Code {
 				start: source.clampSelection(Math.min(from, to)),
 				end: source.clampSelection(Math.max(from, to)),
 			}),
+			goStart: () => source.selection.set(0),
+			goEnd: () => source.selection.set(Infinity),
+			next: () => source.moveHorizontal(1),
+			previous: () => source.moveHorizontal(-1),
+			nextPage: () => source.selection.set(source.selectionHead + 10),
+			previousPage: () => source.selection.set(source.selectionHead - 10),
+		};
+	})();
+	readonly cursorX: SourceCursorNavigationFeature = (() => {
+		const source = this;
+		return {
+			get index() {
+				return source.buffer.positionAt(source.selectionHead).ch;
+			},
+			go: index => source.goColumn(index),
+			range: (from = source.cursorX.index, to = from) => {
+				const line = source.buffer.positionAt(source.selectionHead).line;
+				const start = source.buffer.indexAt({ line, ch: from });
+				const end = source.buffer.indexAt({ line, ch: to });
+				const lineStart = source.buffer.indexAt({ line, ch: 0 });
+				return {
+					start: Math.min(start, end) - lineStart,
+					end: Math.max(start, end) - lineStart,
+				};
+			},
+			goStart: () => source.goColumn(0),
+			goEnd: () => source.goColumn(Infinity),
+			next: () => source.moveHorizontal(1),
+			previous: () => source.moveHorizontal(-1),
+			nextPage: () => source.goColumn(source.cursorX.index + 10),
+			previousPage: () => source.goColumn(source.cursorX.index - 10),
+		};
+	})();
+	readonly cursorY: SourceCursorYFeature = (() => {
+		const source = this;
+		return {
+			get index() {
+				return source.buffer.positionAt(source.selectionHead).line;
+			},
+			go: index => source.goLine(index),
+			range: (from = source.cursorY.index, to = from) =>
+				source.buffer.lineRange(from, to),
+			goStart: () => source.goLine(0),
+			goEnd: () => source.goLine(Infinity),
+			next: () => source.moveVertical(1),
+			previous: () => source.moveVertical(-1),
+			nextPage: () => source.movePage(1),
+			previousPage: () => source.movePage(-1),
+			getVisibleFirst: () => source.text.firstVisibleLine,
+		};
+	})();
+	readonly cursorToken: SourceCursorNavigationFeature = (() => {
+		const source = this;
+		return {
+			get index() {
+				return source.tokenIndex();
+			},
+			go: index => source.goToken(index),
+			range: (from = source.tokenIndex(), to = from) =>
+				source.tokenRange(from, to),
+			goStart: () => source.goToken(0),
+			goEnd: () => source.goToken(Infinity),
+			next: () => source.goToken(source.tokenIndex() + 1),
+			previous: () => source.goToken(source.tokenIndex() - 1),
+			nextPage: () => source.goToken(source.tokenIndex() + 10),
+			previousPage: () => source.goToken(source.tokenIndex() - 10),
 		};
 	})();
 	readonly selection: SourceSelectionFeature = {
@@ -306,6 +385,8 @@ export class Source extends Code {
 	protected selectionHead = 0;
 	protected selectionSync?: (scroll: boolean) => void;
 	protected readonly text = textCanvas(this.host);
+	protected readonly hitTest = new HitTest(this.text);
+	protected preferredX?: number;
 	protected readonly decorationRenderer = sourceDecorations(
 		this.host,
 		range => {
@@ -441,7 +522,7 @@ canvas {
 					const host = $.host;
 					const text = $.text;
 					const cursor = sourceCursor(host);
-					const hitTest = new HitTest(text);
+					const hitTest = $.hitTest;
 					const input = createTextInput($, host);
 					const paste = on(input.element, 'paste');
 					const contextRadius = 2048;
@@ -538,14 +619,6 @@ canvas {
 						return true;
 					}
 
-					function moveVertical(lines: number) {
-						const position = buffer.positionAt($.selectionHead);
-						return buffer.indexAt({
-							line: position.line + lines,
-							ch: position.ch,
-						});
-					}
-
 					function insertKey(event: KeyboardEvent) {
 						const value: string | undefined = {
 							Enter: '\n',
@@ -583,6 +656,15 @@ canvas {
 						const extend = event.shiftKey;
 						const { selectionAnchor: anchor, selectionHead: head } = $;
 						let next: number | undefined;
+						let feature: SourceCursorNavigationFeature | undefined;
+						let movement:
+							| 'goStart'
+							| 'goEnd'
+							| 'next'
+							| 'previous'
+							| 'nextPage'
+							| 'previousPage'
+							| undefined;
 						clipboardKey(event);
 						if (insertKey(event)) return;
 						if ((event.ctrlKey || event.metaKey) && event.key === 'a') {
@@ -590,31 +672,45 @@ canvas {
 							$.setSelectionState(0, buffer.length, false);
 							return;
 						} else if (event.key === 'ArrowLeft') {
-							next =
-								!extend && anchor !== head
-									? Math.min(anchor, head)
-									: head - 1;
+							if (!extend && anchor !== head) next = Math.min(anchor, head);
+							else {
+								feature = $.cursorX;
+								movement = 'previous';
+							}
 						} else if (event.key === 'ArrowRight') {
-							next =
-								!extend && anchor !== head
-									? Math.max(anchor, head)
-									: head + 1;
-						} else if (event.key === 'ArrowUp') next = moveVertical(-1);
-						else if (event.key === 'ArrowDown') next = moveVertical(1);
-						else if (event.key === 'Home') {
-							const position = buffer.positionAt(head);
-							next = buffer.indexAt({ line: position.line, ch: 0 });
+							if (!extend && anchor !== head) next = Math.max(anchor, head);
+							else {
+								feature = $.cursorX;
+								movement = 'next';
+							}
+						} else if (event.key === 'ArrowUp') {
+							feature = $.cursorY;
+							movement = 'previous';
+						} else if (event.key === 'ArrowDown') {
+							feature = $.cursorY;
+							movement = 'next';
+						} else if (event.key === 'Home') {
+							feature = $.cursorX;
+							movement = 'goStart';
 						} else if (event.key === 'End') {
-							const position = buffer.positionAt(head);
-							next = buffer.indexAt({ line: position.line, ch: Infinity });
+							feature = $.cursorX;
+							movement = 'goEnd';
 						} else if (event.key === 'PageUp' || event.key === 'PageDown') {
-							const lineHeight = text.measureElement.offsetHeight || 16;
-							const lines = Math.max(1, Math.floor($.clientHeight / lineHeight));
-							next = moveVertical(event.key === 'PageUp' ? -lines : lines);
+							feature = $.cursorY;
+							movement = event.key === 'PageUp' ? 'previousPage' : 'nextPage';
 						} else return;
 
 						event.preventDefault();
-						setSelection(next, extend);
+						if (feature && movement) {
+							feature[movement]();
+							if (extend)
+								$.setSelectionState(
+									anchor,
+									$.selectionHead,
+									true,
+									feature === $.cursorY,
+								);
+						} else if (next !== undefined) setSelection(next, extend);
 					}
 
 					function pointerPosition(event: PointerEvent) {
@@ -749,6 +845,103 @@ canvas {
 
 	get decorations(): SourceDecorationsFeature {
 		return this.decorationRenderer;
+	}
+
+	protected goColumn(ch: number) {
+		const { line } = this.buffer.positionAt(this.selectionHead);
+		this.selection.set(this.buffer.indexAt({ line, ch }));
+	}
+
+	protected moveHorizontal(direction: -1 | 1) {
+		let next = this.selectionHead + direction;
+		if (
+			direction === 1 &&
+			this.buffer.charAt(this.selectionHead) === '\r' &&
+			this.buffer.charAt(this.selectionHead + 1) === '\n'
+		)
+			next++;
+		else if (
+			direction === -1 &&
+			this.buffer.charAt(this.selectionHead - 2) === '\r' &&
+			this.buffer.charAt(this.selectionHead - 1) === '\n'
+		)
+			next--;
+		this.selection.set(next);
+	}
+
+	protected goLine(line: number) {
+		this.selection.set(this.buffer.indexAt({ line, ch: 0 }));
+	}
+
+	protected moveVertical(direction: -1 | 1) {
+		const position = this.buffer.positionAt(this.selectionHead);
+		const caret = this.text.getCaret(position);
+		let next: number | undefined;
+		if (caret) {
+			const x = this.preferredX ?? caret.x;
+			this.preferredX = x;
+			const hit = this.hitTest.getCaretAtPosition(
+				x,
+				caret.y + this.offsetY + direction * caret.height + caret.height / 2,
+			);
+			if (hit) next = this.buffer.indexAt(hit.position);
+		}
+		if (next === undefined || next === this.selectionHead)
+			next = this.buffer.indexAt({
+				line: position.line + direction,
+				ch: position.ch,
+			});
+		this.setSelectionState(next, next, true, true);
+	}
+
+	protected movePage(direction: -1 | 1) {
+		const position = this.buffer.positionAt(this.selectionHead);
+		const lineHeight = this.text.measureElement.offsetHeight || 16;
+		const lines = Math.max(1, Math.floor(this.clientHeight / lineHeight));
+		const next = this.buffer.indexAt({
+			line: position.line + direction * lines,
+			ch: position.ch,
+		});
+		this.setSelectionState(next, next, true, true);
+	}
+
+	protected tokenIndex() {
+		const tokens = this.highlight.getNavigationTokens();
+		let low = 0;
+		let high = tokens.length;
+		while (low < high) {
+			const middle = (low + high) >> 1;
+			const token = tokens[middle];
+			if (token && token.end <= this.selectionHead) low = middle + 1;
+			else high = middle;
+		}
+		return low;
+	}
+
+	protected tokenRange(from: number, to: number): SourceRange {
+		const tokens = this.highlight.getNavigationTokens();
+		if (!tokens.length)
+			return { start: this.selectionHead, end: this.selectionHead };
+		from = this.normalizeOrdinal(from, tokens.length);
+		to = this.normalizeOrdinal(to, tokens.length);
+		if (from > to) [from, to] = [to, from];
+		return {
+			start: tokens[from]?.start ?? this.buffer.length,
+			end: tokens[to]?.end ?? this.buffer.length,
+		};
+	}
+
+	protected goToken(index: number) {
+		const tokens = this.highlight.getNavigationTokens();
+		if (!tokens.length) return;
+		index = this.normalizeOrdinal(index, tokens.length);
+		this.selection.set(tokens[index]?.start ?? this.buffer.length);
+	}
+
+	protected normalizeOrdinal(index: number, maximum: number) {
+		if (index === Infinity) return maximum;
+		if (!Number.isFinite(index)) return 0;
+		return Math.max(0, Math.min(Math.trunc(index), maximum));
 	}
 
 	protected applyEdit(
@@ -915,8 +1108,14 @@ canvas {
 		return { anchor: this.selectionAnchor, head: this.selectionHead };
 	}
 
-	protected setSelectionState(anchor: number, head: number, scroll: boolean) {
+	protected setSelectionState(
+		anchor: number,
+		head: number,
+		scroll: boolean,
+		preservePreferredX = false,
+	) {
 		this.activeSearch = undefined;
+		if (!preservePreferredX) this.preferredX = undefined;
 		this.selectionAnchor = this.clampSelection(anchor);
 		this.selectionHead = this.clampSelection(head);
 		this.selectionSync?.(scroll);
