@@ -432,6 +432,80 @@ export default spec('@cxl/ui.source', a => {
 			});
 		});
 
+		it.testElement('manages observable selection ranges', async a => {
+			const { source } = await createSourceEditor(a, 'alpha');
+			let changes = 0;
+			const subscription = source.selection.onChange.subscribe(() => changes++);
+
+			source.selection.set(NaN, Infinity);
+			a.equalValues(source.selection.range(), { start: 0, end: 5 });
+			source.selection.set(4, 1);
+			a.equalValues(source.selection.ranges(), [{ start: 1, end: 4 }]);
+			a.ok(source.selection.somethingSelected());
+			source.selection.begin();
+			source.selection.begin();
+			source.cursor.go(0);
+			source.selection.end();
+			source.selection.end();
+			a.equalValues(source.selection.range(), { start: 0, end: 4 });
+			source.selection.set(4, 0);
+
+			source.selection.add(
+				{ start: 2, end: 2 },
+				{ start: Infinity, end: -1 },
+			);
+			a.equalValues(source.selection.ranges(), [
+				{ start: 0, end: 4 },
+				{ start: 2, end: 2 },
+				{ start: 0, end: 5 },
+			]);
+			a.equal(source.cursor.index, 0);
+			source.selection.add();
+			source.selection.clear();
+			a.equalValues(source.selection.ranges(), [{ start: 5, end: 5 }]);
+			a.ok(!source.selection.somethingSelected());
+			a.equal(changes, 5);
+			subscription.unsubscribe();
+		});
+
+		it.testElement('preserves selections through edits and reset', async a => {
+			const { source } = await createSourceEditor(a, 'abcdef');
+
+			source.selection.set(6, 5);
+			source.selection.add({ start: 4, end: 2 });
+			source.edit.replace('X');
+			a.equal(source.getText(), 'abXef');
+			a.equalValues(source.selection.ranges(), [
+				{ start: 4, end: 5 },
+				{ start: 3, end: 3 },
+			]);
+
+			source.history.undo();
+			a.equal(source.getText(), 'abcdef');
+			a.equalValues(source.selection.ranges(), [
+				{ start: 5, end: 6 },
+				{ start: 2, end: 4 },
+			]);
+			source.selection.begin();
+			source.cursor.go(1);
+			source.selection.end();
+			a.equalValues(source.selection.ranges(), [
+				{ start: 5, end: 6 },
+				{ start: 1, end: 4 },
+			]);
+			source.history.redo();
+			a.equalValues(source.selection.ranges(), [
+				{ start: 4, end: 5 },
+				{ start: 3, end: 3 },
+			]);
+
+			source.setText('abc');
+			a.equalValues(source.selection.ranges(), [
+				{ start: 3, end: 3 },
+				{ start: 3, end: 3 },
+			]);
+		});
+
 		it.testElement('navigates the public cursor by index and position', async a => {
 			const { source } = await createSourceEditor(a, 'one\ntwo\nthree');
 			const cursor: {

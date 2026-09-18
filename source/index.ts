@@ -63,9 +63,21 @@ export type SourceChange = BufferChange;
 export type SourcePosition = BufferPosition;
 export type SourceSearchQuery = string | RegExp;
 
+export interface SourceSelection {
+	readonly anchor: number;
+	readonly head: number;
+}
+
 export interface SourceSelectionFeature {
+	readonly onChange: Observable<void>;
 	range(): SourceRange;
+	ranges(): SourceRange[];
 	set(anchor: number, head?: number): void;
+	add(...ranges: SourceRange[]): void;
+	begin(): void;
+	end(): void;
+	clear(): void;
+	somethingSelected(): boolean;
 }
 
 export interface SourceEditFeature {
@@ -127,10 +139,11 @@ export interface SourceSearchFeature {
 	): void;
 }
 
-interface SelectionSnapshot {
-	anchor: number;
-	head: number;
-}
+type SelectionSnapshot = readonly SourceSelection[];
+
+type SelectionUpdate =
+	| { kind: 'active'; selection: SourceSelection }
+	| { kind: 'all'; selections: SelectionSnapshot };
 
 interface HistoryRecord {
 	change: SourceChange;
@@ -147,6 +160,7 @@ interface ActiveSearch {
 const MaxHistoryEntries = 1_000;
 const MaxHistoryText = 16 * 1024 * 1024;
 const DefaultSearchHighlight = 'rgba(255, 210, 0, 0.35)';
+const DefaultSelection: SourceSelection = { anchor: 0, head: 0 };
 
 function* searchMatches(
 	value: string,
@@ -176,6 +190,10 @@ function* searchMatches(
 		}
 		match = expression.exec(value);
 	}
+}
+
+function selectionRange({ anchor, head }: SourceSelection): SourceRange {
+	return { start: Math.min(anchor, head), end: Math.max(anchor, head) };
 }
 
 /**
@@ -273,14 +291,46 @@ export class Source extends Code {
 			previousPage: () => source.goToken(source.tokenIndex() - 10),
 		};
 	})();
-	readonly selection: SourceSelectionFeature = {
-		range: () => ({
-			start: Math.min(this.selectionAnchor, this.selectionHead),
-			end: Math.max(this.selectionAnchor, this.selectionHead),
-		}),
-		set: (anchor, head = anchor) =>
-			this.setSelectionState(anchor, head, true),
-	};
+	readonly selection: SourceSelectionFeature = (() => {
+		const source = this;
+		return {
+			get onChange() {
+				return source.selectionSubject;
+			},
+			range: () => selectionRange(this.activeSelection),
+			ranges: () => this.selectionState.map(selectionRange),
+			set: (anchor, head = anchor) =>
+				this.selectionExtending
+					? this.setActiveSelectionState(this.selectionAnchor, head, true)
+					: this.setSelectionState(anchor, head, true),
+			add: (...ranges) => {
+				if (!ranges.length) return;
+				this.setSelectionsState(
+					[
+						...this.selectionState,
+						...ranges.map(range => ({
+							anchor: range.start,
+							head: range.end,
+						})),
+					],
+					true,
+				);
+			},
+			begin: () => {
+				this.selectionExtending = true;
+			},
+			end: () => {
+				this.selectionExtending = false;
+			},
+			clear: () =>
+				this.setSelectionsState(
+					[{ anchor: this.selectionAnchor, head: this.selectionAnchor }],
+					true,
+				),
+			somethingSelected: () =>
+				this.selectionState.some(({ anchor, head }) => anchor !== head),
+		};
+	})();
 	readonly edit: SourceEditFeature = {
 		replace: (value, range = this.selection.range()) =>
 			this.applyEdit(value, range),
@@ -294,7 +344,7 @@ export class Source extends Code {
 			this.applyEdit(
 				change.removed,
 				{ start: change.start, end: change.start + change.text.length },
-				record.before,
+				{ kind: 'all', selections: record.before },
 				false,
 			);
 			this.redoRecords.push(record);
@@ -311,7 +361,7 @@ export class Source extends Code {
 			this.applyEdit(
 				change.text,
 				{ start: change.start, end: change.start + change.removed.length },
-				record.after,
+				{ kind: 'all', selections: record.after },
 				false,
 			);
 			this.undoRecords.push(record);
@@ -371,6 +421,9 @@ export class Source extends Code {
 	};
 	protected activeSearch?: ActiveSearch;
 	protected readonly changeSubject = new Subject<SourceChange>();
+	protected selectionExtending = false;
+	protected selectionState: SourceSelection[] = [DefaultSelection];
+	protected readonly selectionSubject = new Subject<void>();
 	protected readonly gutterHost = (() => {
 		const element = create('div', { id: 'gutters' });
 		element.setAttribute('part', 'gutters');
@@ -381,8 +434,6 @@ export class Source extends Code {
 	protected readonly redoRecords: HistoryRecord[] = [];
 	protected redoSize = 0;
 	protected readonly refresh = new ReplaySubject<{ dataLength: number }>(1);
-	protected selectionAnchor = 0;
-	protected selectionHead = 0;
 	protected selectionSync?: (scroll: boolean) => void;
 	protected readonly text = textCanvas(this.host);
 	protected readonly hitTest = new HitTest(this.text);
@@ -730,12 +781,9 @@ canvas {
 
 					function resetEditor() {
 						$.clearHistory();
+						$.selectionExtending = false;
 						inputEnd = inputStart = 0;
-						$.setSelectionState(
-							Math.min($.selectionHead, buffer.length),
-							Math.min($.selectionHead, buffer.length),
-							false,
-						);
+						$.setSelectionsState($.selectionSnapshot(), false);
 					}
 
 					$.selectionSync = scroll => {
@@ -762,8 +810,11 @@ canvas {
 								update.text,
 								{ start: update.start, end: update.end },
 								{
-									anchor: update.selectionStart,
-									head: update.selectionEnd,
+									kind: 'active',
+									selection: {
+										anchor: update.selectionStart,
+										head: update.selectionEnd,
+									},
 								},
 								true,
 								true,
@@ -845,6 +896,18 @@ canvas {
 
 	get decorations(): SourceDecorationsFeature {
 		return this.decorationRenderer;
+	}
+
+	protected get selectionAnchor() {
+		return this.activeSelection.anchor;
+	}
+
+	protected get selectionHead() {
+		return this.activeSelection.head;
+	}
+
+	protected get activeSelection() {
+		return this.selectionState.at(-1) ?? DefaultSelection;
 	}
 
 	protected goColumn(ch: number) {
@@ -947,7 +1010,7 @@ canvas {
 	protected applyEdit(
 		value: string,
 		range: SourceRange,
-		after?: SelectionSnapshot,
+		after?: SelectionUpdate,
 		record = true,
 		coalesce = false,
 	) {
@@ -955,11 +1018,18 @@ canvas {
 		const start = Math.min(range.start, range.end);
 		const change = this.replace(start, Math.max(range.start, range.end), value);
 		const next = change.start + value.length;
-		this.setSelectionState(
-			after?.anchor ?? next,
-			after?.head ?? next,
-			false,
+		const selections = before.map(selection =>
+			this.mapSelection(selection, change),
 		);
+		if (after?.kind === 'all')
+			this.setSelectionsState(after.selections, false);
+		else {
+			selections[selections.length - 1] = after?.selection ?? {
+				anchor: next,
+				head: next,
+			};
+			this.setSelectionsState(selections, false);
+		}
 		if (record) {
 			this.recordHistory({
 				change,
@@ -1078,12 +1148,15 @@ canvas {
 		this.redoRecords.length = 0;
 		this.redoSize = 0;
 		const previous = this.undoRecords.at(-1);
+		const before = record.before.at(-1);
+		const after = record.after.at(-1);
 		if (
 			coalesce &&
-			previous?.after.anchor === record.before.anchor &&
-			previous.after.head === record.before.head &&
-			record.before.anchor === record.before.head &&
-			record.after.anchor === record.after.head &&
+			previous &&
+			this.selectionsEqual(previous.after, record.before) &&
+			record.before.length === 1 &&
+			before?.anchor === before?.head &&
+			after?.anchor === after?.head &&
 			!record.change.removed &&
 			record.change.start ===
 				previous.change.start + previous.change.text.length
@@ -1104,8 +1177,8 @@ canvas {
 		this.undoSize = this.trimHistory(this.undoRecords, this.undoSize);
 	}
 
-	protected selectionSnapshot(): SelectionSnapshot {
-		return { anchor: this.selectionAnchor, head: this.selectionHead };
+	protected selectionSnapshot(): SourceSelection[] {
+		return this.selectionState.map(selection => ({ ...selection }));
 	}
 
 	protected setSelectionState(
@@ -1114,11 +1187,66 @@ canvas {
 		scroll: boolean,
 		preservePreferredX = false,
 	) {
+		this.setSelectionsState([{ anchor, head }], scroll, preservePreferredX);
+	}
+
+	protected setActiveSelectionState(
+		anchor: number,
+		head: number,
+		scroll: boolean,
+		preservePreferredX = false,
+	) {
+		const selections = this.selectionSnapshot();
+		selections[selections.length - 1] = { anchor, head };
+		this.setSelectionsState(selections, scroll, preservePreferredX);
+	}
+
+	protected setSelectionsState(
+		selections: SelectionSnapshot,
+		scroll: boolean,
+		preservePreferredX = false,
+	) {
 		this.activeSearch = undefined;
 		if (!preservePreferredX) this.preferredX = undefined;
-		this.selectionAnchor = this.clampSelection(anchor);
-		this.selectionHead = this.clampSelection(head);
+		const next = (selections.length ? selections : [DefaultSelection]).map(
+			({ anchor, head }) => ({
+				anchor: this.clampSelection(anchor),
+				head: this.clampSelection(head),
+			}),
+		);
+		const changed = !this.selectionsEqual(this.selectionState, next);
+		this.selectionState = next;
 		this.selectionSync?.(scroll);
+		if (changed) this.selectionSubject.next();
+	}
+
+	protected mapSelection(
+		selection: SourceSelection,
+		change: SourceChange,
+	): SourceSelection {
+		const delta = change.text.length - (change.end - change.start);
+		const map = (index: number) => {
+			if (index <= change.start) return index;
+			if (index >= change.end) return index + delta;
+			return change.start + change.text.length;
+		};
+		return { anchor: map(selection.anchor), head: map(selection.head) };
+	}
+
+	protected selectionsEqual(
+		left: SelectionSnapshot,
+		right: SelectionSnapshot,
+	) {
+		return (
+			left.length === right.length &&
+			left.every((selection, index) => {
+				const other = right[index];
+				return (
+					other?.anchor === selection.anchor &&
+					other.head === selection.head
+				);
+			})
+		);
 	}
 
 	protected trimHistory(records: HistoryRecord[], size: number) {
@@ -1218,14 +1346,12 @@ canvas {
 
 	protected override reset() {
 		this.clearHistory();
+		this.selectionExtending = false;
 		for (const gutter of this.gutters) gutter.reset?.();
 		this.decorationRenderer.reset();
 		if (this.searchHighlight)
 			this.highlightSearch(this.searchHighlight.query, this.searchHighlight);
-		this.selectionAnchor = this.selectionHead = Math.min(
-			this.selectionHead,
-			this.buffer.length,
-		);
+		this.setSelectionsState(this.selectionSnapshot(), false);
 	}
 
 	private clampSelection(index: number) {
