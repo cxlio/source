@@ -127,6 +127,25 @@ export default spec('Source line rendering benchmarks', s => {
 		}, featureBenchmarkOptions);
 	});
 
+	s.test('large-document block selection', async a => {
+		const source = a.element(Source);
+		source.style.cssText =
+			'display:block;width:320px;height:160px;font:12px monospace';
+		source.setText(createLargeSource(HistoryLineCount));
+		await a.sleep(20);
+		const anchor = source.cursor.indexAt({ line: 0, ch: 1 });
+		let line = HistoryLineCount - 1;
+
+		await a.benchmark(() => {
+			source.selection.block(
+				anchor,
+				source.cursor.indexAt({ line, ch: 5 }),
+			);
+			line = line === HistoryLineCount - 1 ? HistoryLineCount - 2 : HistoryLineCount - 1;
+			return source.cursor.index;
+		}, featureBenchmarkOptions);
+	});
+
 	s.test('large-document search', async a => {
 		const source = new Source();
 		source.setText(createLargeSource());

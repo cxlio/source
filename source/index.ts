@@ -73,6 +73,7 @@ export interface SourceSelectionFeature {
 	range(): SourceRange;
 	ranges(): SourceRange[];
 	set(anchor: number, head?: number): void;
+	block(anchor: number, head?: number): void;
 	add(...ranges: SourceRange[]): void;
 	begin(): void;
 	end(): void;
@@ -110,6 +111,14 @@ export interface SourceHistoryFeature {
 	redo(): void;
 }
 
+type CursorMovement =
+	| 'goStart'
+	| 'goEnd'
+	| 'next'
+	| 'previous'
+	| 'nextPage'
+	| 'previousPage';
+
 export interface SourceSearchOptions {
 	reverse?: boolean;
 	caseSensitive?: boolean;
@@ -141,12 +150,8 @@ export interface SourceSearchFeature {
 
 type SelectionSnapshot = readonly SourceSelection[];
 
-type SelectionUpdate =
-	| { kind: 'active'; selection: SourceSelection }
-	| { kind: 'all'; selections: SelectionSnapshot };
-
 interface HistoryRecord {
-	change: SourceChange;
+	changes: SourceChange[];
 	before: SelectionSnapshot;
 	after: SelectionSnapshot;
 }
@@ -299,12 +304,17 @@ export class Source extends Code {
 			},
 			range: () => selectionRange(this.activeSelection),
 			ranges: () => this.selectionState.map(selectionRange),
-			set: (anchor, head = anchor) =>
-				this.selectionExtending
-					? this.setActiveSelectionState(this.selectionAnchor, head, true)
-					: this.setSelectionState(anchor, head, true),
+			set: (anchor, head = anchor) => {
+				this.blockAnchor = undefined;
+				if (this.selectionExtending)
+					this.setActiveSelectionState(this.selectionAnchor, head, true);
+				else this.setSelectionState(anchor, head, true);
+			},
+			block: (anchor, head = anchor) =>
+				this.setBlockSelectionState(anchor, head, true),
 			add: (...ranges) => {
 				if (!ranges.length) return;
+				this.blockAnchor = undefined;
 				this.setSelectionsState(
 					[
 						...this.selectionState,
@@ -317,36 +327,35 @@ export class Source extends Code {
 				);
 			},
 			begin: () => {
+				this.blockAnchor = undefined;
 				this.selectionExtending = true;
 			},
 			end: () => {
 				this.selectionExtending = false;
 			},
-			clear: () =>
+			clear: () => {
+				this.blockAnchor = undefined;
 				this.setSelectionsState(
 					[{ anchor: this.selectionAnchor, head: this.selectionAnchor }],
 					true,
-				),
+				);
+			},
 			somethingSelected: () =>
 				this.selectionState.some(({ anchor, head }) => anchor !== head),
 		};
 	})();
 	readonly edit: SourceEditFeature = {
-		replace: (value, range = this.selection.range()) =>
-			this.applyEdit(value, range),
+		replace: (value, range) =>
+			range
+				? this.applyEdit(value, range)
+				: this.applySelectionEdit(value),
 	};
 	readonly history: SourceHistoryFeature = {
 		undo: () => {
 			const record = this.undoRecords.pop();
 			if (!record) return;
 			this.undoSize -= this.historyRecordSize(record);
-			const { change } = record;
-			this.applyEdit(
-				change.removed,
-				{ start: change.start, end: change.start + change.text.length },
-				{ kind: 'all', selections: record.before },
-				false,
-			);
+			this.replayHistory(record, true);
 			this.redoRecords.push(record);
 			this.redoSize = this.trimHistory(
 				this.redoRecords,
@@ -357,13 +366,7 @@ export class Source extends Code {
 			const record = this.redoRecords.pop();
 			if (!record) return;
 			this.redoSize -= this.historyRecordSize(record);
-			const { change } = record;
-			this.applyEdit(
-				change.text,
-				{ start: change.start, end: change.start + change.removed.length },
-				{ kind: 'all', selections: record.after },
-				false,
-			);
+			this.replayHistory(record, false);
 			this.undoRecords.push(record);
 			this.undoSize = this.trimHistory(
 				this.undoRecords,
@@ -420,6 +423,7 @@ export class Source extends Code {
 		},
 	};
 	protected activeSearch?: ActiveSearch;
+	protected blockAnchor?: number;
 	protected readonly changeSubject = new Subject<SourceChange>();
 	protected selectionExtending = false;
 	protected selectionState: SourceSelection[] = [DefaultSelection];
@@ -581,6 +585,7 @@ canvas {
 					let inputEnd = 0;
 					let inputStart = 0;
 					let pointerAnchor: number | undefined;
+					let pointerBlock = false;
 
 					host.insertBefore(cursor.canvas, text.measureElement);
 					$.tabIndex = input.kind === 'edit-context' ? 0 : -1;
@@ -613,18 +618,39 @@ canvas {
 					}
 
 					function renderSelection() {
-						const { selectionAnchor: anchor, selectionHead: head } = $;
-						const start = buffer.positionAt(Math.min(anchor, head));
-						const end = buffer.positionAt(Math.max(anchor, head));
+						const selections = $.selectionState;
+						const firstLine = text.firstVisibleLine;
+						const lastLine = text.toRender.at(-1)?.row ?? firstLine;
+						const visible = selections.flatMap(selection => {
+							const { start, end } = selectionRange(selection);
+							const startPosition = buffer.positionAt(start);
+							const endPosition = buffer.positionAt(end);
+							return endPosition.line < firstLine || startPosition.line > lastLine
+								? []
+								: [{ selection, startPosition, endPosition }];
+						});
 						cursor.setSelection(
-							text.getSelectionRects(start, end),
+							visible.flatMap(({ startPosition, endPosition }) => {
+								return text.getSelectionRects(
+									startPosition,
+									endPosition,
+								);
+							}),
 							$.offsetY,
 						);
-						const caret = text.getCaret(buffer.positionAt(head));
-						if (caret && $.matches(':focus-within')) {
-							cursor.setPosition(caret, $.offsetY);
-							input.setBounds(cursor.bounds);
-						} else cursor.hideCaret();
+						if (!$.matches(':focus-within')) {
+							cursor.hideCaret();
+							return;
+						}
+						const carets = visible.flatMap(({ selection }) => {
+							const caret = text.getCaret(buffer.positionAt(selection.head));
+							return caret ? [caret] : [];
+						});
+						cursor.setPositions(carets, $.offsetY);
+						const activeCaret = text.getCaret(
+							buffer.positionAt($.selectionHead),
+						);
+						if (activeCaret) input.setBounds(cursor.bounds);
 					}
 
 					function scrollToHead() {
@@ -642,6 +668,7 @@ canvas {
 					}
 
 					function setSelection(next: number, extend = false) {
+						$.blockAnchor = undefined;
 						$.setSelectionState(
 							extend ? $.selectionAnchor : next,
 							next,
@@ -660,12 +687,16 @@ canvas {
 					}
 
 					function copySelection(event: ClipboardEvent) {
-						const { start, end } = $.selection.range();
-						if (start === end || !event.clipboardData) return false;
+						const ranges = $.selection
+							.ranges()
+							.filter(({ start, end }) => start !== end);
+						if (!ranges.length || !event.clipboardData) return false;
 						event.preventDefault();
 						event.clipboardData.setData(
 							'text/plain',
-							buffer.getText(start, end),
+							ranges
+								.map(({ start, end }) => buffer.getText(start, end))
+								.join('\n'),
 						);
 						return true;
 					}
@@ -690,7 +721,7 @@ canvas {
 						const key = event.key.toLowerCase();
 						if (
 							(key !== 'c' && key !== 'x' && key !== 'v') ||
-							(key !== 'v' && $.selectionAnchor === $.selectionHead)
+							(key !== 'v' && !$.selection.somethingSelected())
 						)
 							return;
 						input.clipboardElement.removeAttribute('aria-hidden');
@@ -703,26 +734,47 @@ canvas {
 						input.focus();
 					}
 
+					function moveSelection(
+						feature: SourceCursorNavigationFeature,
+						movement: CursorMovement,
+						extend: boolean,
+						block: boolean,
+						anchor: number,
+						blockAnchor: number,
+					) {
+						feature[movement]();
+						if (block)
+							$.setBlockSelectionState(blockAnchor, $.selectionHead, true);
+						else if (extend)
+							$.setSelectionState(
+								anchor,
+								$.selectionHead,
+								true,
+								feature === $.cursorY,
+							);
+					}
+
+					function selectAllKey(event: KeyboardEvent) {
+						if ((!event.ctrlKey && !event.metaKey) || event.key !== 'a')
+							return false;
+						event.preventDefault();
+						$.blockAnchor = undefined;
+						$.setSelectionState(0, buffer.length, false);
+						return true;
+					}
+
 					function moveKey(event: KeyboardEvent) {
 						const extend = event.shiftKey;
+						const block = event.altKey && extend;
 						const { selectionAnchor: anchor, selectionHead: head } = $;
+						const blockAnchor = $.blockAnchor ?? anchor;
 						let next: number | undefined;
 						let feature: SourceCursorNavigationFeature | undefined;
-						let movement:
-							| 'goStart'
-							| 'goEnd'
-							| 'next'
-							| 'previous'
-							| 'nextPage'
-							| 'previousPage'
-							| undefined;
+						let movement: CursorMovement | undefined;
 						clipboardKey(event);
 						if (insertKey(event)) return;
-						if ((event.ctrlKey || event.metaKey) && event.key === 'a') {
-							event.preventDefault();
-							$.setSelectionState(0, buffer.length, false);
-							return;
-						} else if (event.key === 'ArrowLeft') {
+						if (selectAllKey(event)) return;
+						if (event.key === 'ArrowLeft') {
 							if (!extend && anchor !== head) next = Math.min(anchor, head);
 							else {
 								feature = $.cursorX;
@@ -752,16 +804,16 @@ canvas {
 						} else return;
 
 						event.preventDefault();
-						if (feature && movement) {
-							feature[movement]();
-							if (extend)
-								$.setSelectionState(
-									anchor,
-									$.selectionHead,
-									true,
-									feature === $.cursorY,
-								);
-						} else if (next !== undefined) setSelection(next, extend);
+						if (feature && movement)
+							moveSelection(
+								feature,
+								movement,
+								extend,
+								block,
+								anchor,
+								blockAnchor,
+							);
+						else if (next !== undefined) setSelection(next, extend);
 					}
 
 					function pointerPosition(event: PointerEvent) {
@@ -776,11 +828,14 @@ canvas {
 					function stopPointerSelection(event?: PointerEvent) {
 						if (event && $.hasPointerCapture(event.pointerId))
 							$.releasePointerCapture(event.pointerId);
+						$.blockAnchor = undefined;
 						pointerAnchor = undefined;
+						pointerBlock = false;
 					}
 
 					function resetEditor() {
 						$.clearHistory();
+						$.blockAnchor = undefined;
 						$.selectionExtending = false;
 						inputEnd = inputStart = 0;
 						$.setSelectionsState($.selectionSnapshot(), false);
@@ -806,17 +861,13 @@ canvas {
 						}),
 						input.updates.tap(update => {
 							update = normalizeInput(update);
-							$.applyEdit(
+							$.applySelectionEdit(
 								update.text,
 								{ start: update.start, end: update.end },
 								{
-									kind: 'active',
-									selection: {
-										anchor: update.selectionStart,
-										head: update.selectionEnd,
-									},
+									anchor: update.selectionStart,
+									head: update.selectionEnd,
 								},
-								true,
 								true,
 							);
 						}),
@@ -846,8 +897,14 @@ canvas {
 							pointerAnchor = event.shiftKey
 								? $.selectionAnchor
 								: position;
+							pointerBlock = event.altKey;
 							$.setPointerCapture(event.pointerId);
-							$.setSelectionState(pointerAnchor, position, false);
+							if (pointerBlock)
+								$.setBlockSelectionState(pointerAnchor, position, false);
+							else {
+								$.blockAnchor = undefined;
+								$.setSelectionState(pointerAnchor, position, false);
+							}
 						}),
 						on($, 'pointermove').tap(event => {
 							if (pointerAnchor === undefined) return;
@@ -857,13 +914,13 @@ canvas {
 							}
 							const position = pointerPosition(event);
 							if (position === undefined) return;
-							$.setSelectionState(pointerAnchor, position, false);
+							if (pointerBlock)
+								$.setBlockSelectionState(pointerAnchor, position, true);
+							else $.setSelectionState(pointerAnchor, position, true);
 						}),
 						on($, 'pointerup').tap(stopPointerSelection),
 						on($, 'pointercancel').tap(stopPointerSelection),
-						on($, 'lostpointercapture').tap(() => {
-							pointerAnchor = undefined;
-						}),
+						on($, 'lostpointercapture').tap(() => stopPointerSelection()),
 						onThemeChange.tap(() => {
 							cursor.updateStyles();
 						}),
@@ -1007,13 +1064,7 @@ canvas {
 		return Math.max(0, Math.min(Math.trunc(index), maximum));
 	}
 
-	protected applyEdit(
-		value: string,
-		range: SourceRange,
-		after?: SelectionUpdate,
-		record = true,
-		coalesce = false,
-	) {
+	protected applyEdit(value: string, range: SourceRange) {
 		const before = this.selectionSnapshot();
 		const start = Math.min(range.start, range.end);
 		const change = this.replace(start, Math.max(range.start, range.end), value);
@@ -1021,24 +1072,106 @@ canvas {
 		const selections = before.map(selection =>
 			this.mapSelection(selection, change),
 		);
-		if (after?.kind === 'all')
-			this.setSelectionsState(after.selections, false);
-		else {
-			selections[selections.length - 1] = after?.selection ?? {
-				anchor: next,
-				head: next,
-			};
-			this.setSelectionsState(selections, false);
-		}
-		if (record) {
-			this.recordHistory({
-				change,
-				before,
-				after: this.selectionSnapshot(),
-			}, coalesce);
-		}
+		selections[selections.length - 1] = { anchor: next, head: next };
+		this.setSelectionsState(selections, false);
+		this.recordHistory(
+			{ changes: [change], before, after: this.selectionSnapshot() },
+			false,
+		);
 		this.changeSubject.next(change);
 		return change;
+	}
+
+	protected applySelectionEdit(
+		value: string,
+		activeRange?: SourceRange,
+		activeAfter?: SourceSelection,
+		coalesce = false,
+	) {
+		const before = this.selectionSnapshot();
+		const activeIndex = before.length - 1;
+		const active = before[activeIndex] ?? DefaultSelection;
+		const activeHead = active.head;
+		const entries = before.map((selection, index) => {
+			let range = selectionRange(selection);
+			if (activeRange && index === activeIndex) range = activeRange;
+			else if (
+				activeRange &&
+				selection.anchor === selection.head &&
+				active.anchor === active.head
+			) {
+				range = {
+					start: selection.head + activeRange.start - activeHead,
+					end: selection.head + activeRange.end - activeHead,
+				};
+			}
+			return { index, range: this.cursor.range(range.start, range.end) };
+		});
+		entries.sort((left, right) =>
+			left.range.start - right.range.start || left.range.end - right.range.end,
+		);
+		const groups: { indexes: number[]; range: SourceRange }[] = [];
+		for (const entry of entries) {
+			const previous = groups.at(-1);
+			const overlaps =
+				previous &&
+				(entry.range.start < previous.range.end ||
+					(entry.range.start === entry.range.end &&
+						entry.range.start >= previous.range.start &&
+						entry.range.start <= previous.range.end) ||
+					(previous.range.start === previous.range.end &&
+						previous.range.start >= entry.range.start &&
+						previous.range.start <= entry.range.end));
+			if (overlaps) {
+				previous.range = {
+					start: Math.min(previous.range.start, entry.range.start),
+					end: Math.max(previous.range.end, entry.range.end),
+				};
+				previous.indexes.push(entry.index);
+			} else groups.push({ indexes: [entry.index], range: entry.range });
+		}
+
+		const selections = before.map(selection => ({ ...selection }));
+		const changes: SourceChange[] = [];
+		let activeChange: SourceChange | undefined;
+		groups.reverse();
+		for (const group of groups) {
+			const change = this.replace(group.range.start, group.range.end, value);
+			changes.push(change);
+			for (const [index, selection] of selections.entries())
+				selections[index] = this.mapSelection(selection, change);
+			const next = change.start + value.length;
+			for (const index of group.indexes) {
+				selections[index] =
+					index === activeIndex && activeAfter
+						? { ...activeAfter }
+						: { anchor: next, head: next };
+				if (index === activeIndex) activeChange = change;
+			}
+			this.changeSubject.next(change);
+		}
+		this.blockAnchor = undefined;
+		this.setSelectionsState(selections, false);
+		this.recordHistory(
+			{ changes, before, after: this.selectionSnapshot() },
+			coalesce,
+		);
+		const result = activeChange ?? changes[0];
+		if (!result) throw new Error('Selection edit failed');
+		return result;
+	}
+
+	protected replayHistory(record: HistoryRecord, undo: boolean) {
+		const changes = undo ? [...record.changes].reverse() : record.changes;
+		for (const change of changes) {
+			const value = undo ? change.removed : change.text;
+			const length = undo ? change.text.length : change.removed.length;
+			this.changeSubject.next(
+				this.replace(change.start, change.start + length, value),
+			);
+		}
+		this.blockAnchor = undefined;
+		this.setSelectionsState(undo ? record.before : record.after, false);
 	}
 
 	protected clearHistory() {
@@ -1131,7 +1264,10 @@ canvas {
 	}
 
 	protected historyRecordSize(record: HistoryRecord) {
-		return record.change.text.length + record.change.removed.length;
+		return record.changes.reduce(
+			(size, change) => size + change.text.length + change.removed.length,
+			0,
+		);
 	}
 
 	protected updateSearchDecorationStyle() {
@@ -1150,23 +1286,28 @@ canvas {
 		const previous = this.undoRecords.at(-1);
 		const before = record.before.at(-1);
 		const after = record.after.at(-1);
+		const change = record.changes[0];
+		const previousChange = previous?.changes[0];
 		if (
 			coalesce &&
 			previous &&
+			change &&
+			previousChange &&
+			record.changes.length === 1 &&
+			previous.changes.length === 1 &&
 			this.selectionsEqual(previous.after, record.before) &&
 			record.before.length === 1 &&
 			before?.anchor === before?.head &&
 			after?.anchor === after?.head &&
-			!record.change.removed &&
-			record.change.start ===
-				previous.change.start + previous.change.text.length
+			!change.removed &&
+			change.start === previousChange.start + previousChange.text.length
 		) {
 			this.undoSize -= this.historyRecordSize(previous);
-			previous.change = {
-				...previous.change,
-				text: previous.change.text + record.change.text,
-				lineEnd: Math.max(previous.change.lineEnd, record.change.lineEnd),
-				lineDelta: previous.change.lineDelta + record.change.lineDelta,
+			previous.changes[0] = {
+				...previousChange,
+				text: previousChange.text + change.text,
+				lineEnd: Math.max(previousChange.lineEnd, change.lineEnd),
+				lineDelta: previousChange.lineDelta + change.lineDelta,
 			};
 			previous.after = record.after;
 			this.undoSize += this.historyRecordSize(previous);
@@ -1188,6 +1329,32 @@ canvas {
 		preservePreferredX = false,
 	) {
 		this.setSelectionsState([{ anchor, head }], scroll, preservePreferredX);
+	}
+
+	protected setBlockSelectionState(
+		anchor: number,
+		head: number,
+		scroll: boolean,
+	) {
+		anchor = this.clampSelection(anchor);
+		head = this.clampSelection(head);
+		const anchorPosition = this.buffer.positionAt(anchor);
+		const headPosition = this.buffer.positionAt(head);
+		const direction = anchorPosition.line <= headPosition.line ? 1 : -1;
+		const selections: SourceSelection[] = [];
+		for (
+			let line = anchorPosition.line;
+			;
+			line += direction
+		) {
+			selections.push({
+				anchor: this.buffer.indexAt({ line, ch: anchorPosition.ch }),
+				head: this.buffer.indexAt({ line, ch: headPosition.ch }),
+			});
+			if (line === headPosition.line) break;
+		}
+		this.blockAnchor = anchor;
+		this.setSelectionsState(selections, scroll);
 	}
 
 	protected setActiveSelectionState(

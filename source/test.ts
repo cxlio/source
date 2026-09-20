@@ -110,7 +110,7 @@ async function editorAction(
 async function editorShortcut(
 	a: TestApi,
 	element: Element,
-	modifier: 'Control' | 'Shift',
+	modifier: 'Alt' | 'Control' | 'Shift',
 	key: string,
 ) {
 	await editorAction(a, element, 'keyDown', modifier);
@@ -325,6 +325,32 @@ export default spec('@cxl/ui.source', a => {
 		});
 	});
 
+	a.figure(
+		'block-selection',
+		'<c-source-block-selection style="display:block;width:320px;height:96px;pointer-events:none;font:16px/20px monospace;color:#111;--cxl-source-selection:rgba(0,120,215,.35)"></c-source-block-selection>',
+		node => {
+			(node as HTMLElement).style.pointerEvents = 'none';
+			if (customElements.get('c-source-block-selection')) return;
+			customElements.define(
+				'c-source-block-selection',
+				class extends Source {
+					constructor() {
+						super();
+						this.setText('alpha\nbravo\ncharlie');
+					}
+
+					protected override connectedCallback() {
+						super.connectedCallback();
+						this.selection.block(
+							this.cursor.indexAt({ line: 0, ch: 1 }),
+							this.cursor.indexAt({ line: 2, ch: 4 }),
+						);
+					}
+				},
+			);
+		},
+	);
+
 	a.test('native input', it => {
 		it.testElement('renders text set before connection after editing', async (a: TestApi) => {
 			const container = a.element('div');
@@ -468,15 +494,80 @@ export default spec('@cxl/ui.source', a => {
 			subscription.unsubscribe();
 		});
 
+		it.testElement('creates rectangular block selections', async a => {
+			const { source } = await createSourceEditor(a, 'abcd\nx\n\nwxyz');
+			const end = source.cursor.indexAt({ line: 3, ch: 3 });
+
+			source.selection.block(1, end);
+			a.equalValues(source.selection.ranges(), [
+				{ start: 1, end: 3 },
+				{ start: 6, end: 6 },
+				{ start: 7, end: 7 },
+				{ start: 9, end: 11 },
+			]);
+			a.equal(source.cursor.index, end);
+
+			source.selection.block(end, 1);
+			a.equalValues(source.selection.ranges(), [
+				{ start: 9, end: 11 },
+				{ start: 7, end: 7 },
+				{ start: 6, end: 6 },
+				{ start: 1, end: 3 },
+			]);
+			a.equal(source.cursor.index, 1);
+
+			source.selection.block(NaN, Infinity);
+			a.equalValues(source.selection.ranges(), [
+				{ start: 0, end: 4 },
+				{ start: 5, end: 6 },
+				{ start: 7, end: 7 },
+				{ start: 8, end: 12 },
+			]);
+		});
+
+		it.testElement('edits multiple selections as one history entry', async a => {
+			const { source } = await createSourceEditor(a, 'ab\ncd');
+			source.selection.block(
+				source.cursor.indexAt({ line: 0, ch: 1 }),
+				source.cursor.indexAt({ line: 1, ch: 1 }),
+			);
+
+			source.edit.replace('X');
+			a.equal(source.getText(), 'aXb\ncXd');
+			a.equalValues(source.selection.ranges(), [
+				{ start: 2, end: 2 },
+				{ start: 6, end: 6 },
+			]);
+
+			source.history.undo();
+			a.equal(source.getText(), 'ab\ncd');
+			a.equalValues(source.selection.ranges(), [
+				{ start: 1, end: 1 },
+				{ start: 4, end: 4 },
+			]);
+			source.history.redo();
+			a.equal(source.getText(), 'aXb\ncXd');
+
+			source.selection.set(1, 3);
+			source.selection.add({ start: 2, end: 4 }, { start: 1, end: 3 });
+			source.edit.replace('Y');
+			a.equal(source.getText(), 'aYcXd');
+			a.equalValues(source.selection.ranges(), [
+				{ start: 2, end: 2 },
+				{ start: 2, end: 2 },
+				{ start: 2, end: 2 },
+			]);
+		});
+
 		it.testElement('preserves selections through edits and reset', async a => {
 			const { source } = await createSourceEditor(a, 'abcdef');
 
 			source.selection.set(6, 5);
 			source.selection.add({ start: 4, end: 2 });
 			source.edit.replace('X');
-			a.equal(source.getText(), 'abXef');
+			a.equal(source.getText(), 'abXeX');
 			a.equalValues(source.selection.ranges(), [
-				{ start: 4, end: 5 },
+				{ start: 5, end: 5 },
 				{ start: 3, end: 3 },
 			]);
 
@@ -495,7 +586,7 @@ export default spec('@cxl/ui.source', a => {
 			]);
 			source.history.redo();
 			a.equalValues(source.selection.ranges(), [
-				{ start: 4, end: 5 },
+				{ start: 5, end: 5 },
 				{ start: 3, end: 3 },
 			]);
 
@@ -914,7 +1005,7 @@ export default spec('@cxl/ui.source', a => {
 			pasted.setData('text/plain', '!pasted\nsecond');
 			let error = '';
 			const onError = (event: ErrorEvent) => {
-				error = event.error?.message ?? event.message;
+				error = event.error instanceof Error ? event.error.message : event.message;
 				event.preventDefault();
 			};
 			window.addEventListener('error', onError);
@@ -1015,6 +1106,66 @@ export default spec('@cxl/ui.source', a => {
 			a.equal(clipboardSelection(target, 'cut'), 'two\nlines!');
 		});
 
+		it.testElement('edits and copies block selections through native input', async a => {
+			const { source, target } = await createSourceEditor(a, 'ab\ncd');
+			source.selection.block(
+				source.cursor.indexAt({ line: 0, ch: 0 }),
+				source.cursor.indexAt({ line: 1, ch: 1 }),
+			);
+			a.equal(clipboardSelection(target), 'a\nc');
+
+			await editorAction(a, target, 'type', 'X');
+			a.equal(source.getText(), 'Xb\nXd');
+
+			source.history.undo();
+			a.equal(source.getText(), 'ab\ncd');
+			a.equal(clipboardSelection(target, 'cut'), 'a\nc');
+			a.equal(source.getText(), 'b\nd');
+
+			const pasted = new DataTransfer();
+			pasted.setData('text/plain', 'Z');
+			target.dispatchEvent(
+				new ClipboardEvent('paste', {
+					bubbles: true,
+					cancelable: true,
+					clipboardData: pasted,
+				}),
+			);
+			a.equal(source.getText(), 'Zb\nZd');
+		});
+
+		it.testElement('extends block selections with the keyboard', async a => {
+			const { source, target } = await createSourceEditor(a, 'abc\ndef');
+			source.cursor.go(1);
+			(target as HTMLElement).focus();
+
+			await editorAction(a, target, 'keyDown', 'Alt');
+			await editorAction(a, target, 'keyDown', 'Shift');
+			await editorAction(a, target, 'press', 'ArrowDown');
+			await editorAction(a, target, 'press', 'ArrowRight');
+			await editorAction(a, target, 'keyUp', 'Shift');
+			await editorAction(a, target, 'keyUp', 'Alt');
+
+			a.equalValues(source.selection.ranges(), [
+				{ start: 1, end: 2 },
+				{ start: 5, end: 6 },
+			]);
+			a.equal(clipboardSelection(target), 'b\ne');
+		});
+
+		it.testElement('scrolls a distant block head into view', async a => {
+			const { source } = await createSourceEditor(
+				a,
+				Array.from({ length: 100 }, (_, line) => `line ${line}`).join('\n'),
+			);
+			source.selection.block(
+				0,
+				source.cursor.indexAt({ line: 80, ch: 2 }),
+			);
+			await a.sleep(50);
+			a.ok(source.scrollTop > 0, 'block head scrolls into the viewport');
+		});
+
 		it.testElement('copy and paste with native keyboard shortcuts', async a => {
 			const { target: source } = await createSourceEditor(a, 'copied text');
 			const { target } = await createSourceEditor(a, '');
@@ -1064,6 +1215,45 @@ export default spec('@cxl/ui.source', a => {
 				'off',
 				'native autocorrection disabled',
 			);
+		});
+
+		it.testElement('updates composition text at every block caret', async (a: TestApi) => {
+			const { source } = await createSourceEditor(a, 'ab\ncd');
+			const editContext = source.editContext;
+			a.assert(editContext, 'EditContext is active');
+			source.selection.block(
+				source.cursor.indexAt({ line: 0, ch: 1 }),
+				source.cursor.indexAt({ line: 1, ch: 1 }),
+			);
+
+			editContext.dispatchEvent(
+				new TextUpdateEvent('textupdate', {
+					compositionEnd: 5,
+					compositionStart: 4,
+					selectionEnd: 5,
+					selectionStart: 5,
+					text: '日',
+					updateRangeEnd: 4,
+					updateRangeStart: 4,
+				}),
+			);
+			editContext.dispatchEvent(
+				new TextUpdateEvent('textupdate', {
+					compositionEnd: 7,
+					compositionStart: 5,
+					selectionEnd: 7,
+					selectionStart: 7,
+					text: '日本',
+					updateRangeEnd: 6,
+					updateRangeStart: 5,
+				}),
+			);
+
+			a.equal(source.getText(), 'a日本b\nc日本d');
+			a.equalValues(source.selection.ranges(), [
+				{ start: 3, end: 3 },
+				{ start: 8, end: 8 },
+			]);
 		});
 
 		it.testElement('keep text fixed through first focus and edit', async (a: TestApi) => {
@@ -1146,6 +1336,29 @@ export default spec('@cxl/ui.source', a => {
 			a.equal(source.cursor.index, 0);
 		});
 
+		it.testElement('renders block selections across wrapped rows', async (a: TestApi) => {
+			const { source } = await createSourceEditor(
+				a,
+				`${'wrapped '.repeat(12)}\n${'second '.repeat(12)}`,
+			);
+			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>(
+				'canvas[part="cursor"]',
+			);
+			const measure = source.shadowRoot?.querySelector<HTMLElement>('#measure');
+			a.assert(canvas && measure, 'selection rendering surface exists');
+			source.selection.block(
+				source.cursor.indexAt({ line: 0, ch: 8 }),
+				source.cursor.indexAt({ line: 1, ch: 60 }),
+			);
+			await a.sleep(20);
+			const bounds = paintedBounds(canvas);
+			a.assert(bounds, 'block selection is painted');
+			a.ok(
+				bounds.bottom - bounds.top > measure.offsetHeight * 2,
+				'selection spans wrapped visual rows',
+			);
+		});
+
 		it.testElement('scroll the caret into view during page navigation', async a => {
 			const { source, target } = await createSourceEditor(
 				a,
@@ -1202,6 +1415,94 @@ export default spec('@cxl/ui.source', a => {
 				toWhitespace.message ?? toWhitespace.failureMessage,
 			);
 			a.equal(clipboardSelection(target), 'ABCDE');
+		});
+
+		it.testElement('select a block with an Alt pointer drag', async (a: TestApi) => {
+			const { source, target } = await createSourceEditor(
+				a,
+				'abcd\nefgh\nijkl',
+			);
+			const body = source.shadowRoot?.querySelector<HTMLElement>('#body');
+			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>(
+				'canvas[part="text"]',
+			);
+			const measure = source.shadowRoot?.querySelector<HTMLElement>('#measure');
+			a.assert(body && canvas && measure, 'editor rendering surface exists');
+			const rect = body.getBoundingClientRect();
+			const context = canvas.getContext('2d');
+			const x1 = context?.measureText('a').width ?? 7;
+			const x3 = context?.measureText('abc').width ?? 21;
+			const marker = (x: number, line: number) => {
+				const element = a.element('div');
+				element.style.cssText = `position:absolute;pointer-events:none;z-index:1000;left:${window.scrollX + rect.left + x}px;top:${window.scrollY + rect.top + measure.offsetHeight * (line + 0.5)}px;width:1px;height:1px`;
+				return element;
+			};
+
+			await editorAction(a, target, 'keyDown', 'Alt');
+			const selection = await a.drag(marker(x1, 0), marker(x3, 2));
+			await editorAction(a, target, 'keyUp', 'Alt');
+			a.ok(selection.success, selection.message ?? selection.failureMessage);
+			a.equal(clipboardSelection(target), 'bc\nfg\njk');
+		});
+
+		it.testElement('stop block selection after pointer cancellation', async (a: TestApi) => {
+			const { source, target } = await createSourceEditor(
+				a,
+				'ABCDE\nABCDE\nABCDE',
+			);
+			const body = source.shadowRoot?.querySelector<HTMLElement>('#body');
+			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>(
+				'canvas[part="text"]',
+			);
+			const measure = source.shadowRoot?.querySelector<HTMLElement>('#measure');
+			a.assert(body && canvas && measure, 'editor rendering surface exists');
+			const rect = body.getBoundingClientRect();
+			const width = canvas.getContext('2d')?.measureText('ABCD').width ?? 29;
+			const options = {
+				bubbles: true,
+				composed: true,
+				pointerId: 7,
+			};
+			source.setPointerCapture = () => undefined;
+			source.hasPointerCapture = () => false;
+
+			body.dispatchEvent(
+				new PointerEvent('pointerdown', {
+					...options,
+					altKey: true,
+					button: 0,
+					buttons: 1,
+					clientX: rect.left + 2,
+					clientY: rect.top + measure.offsetHeight / 2,
+				}),
+			);
+			body.dispatchEvent(
+				new PointerEvent('pointermove', {
+					...options,
+					buttons: 1,
+					clientX: rect.left + width,
+					clientY: rect.top + measure.offsetHeight * 1.5,
+				}),
+			);
+			const before = source.selection.ranges();
+			body.dispatchEvent(new PointerEvent('pointercancel', options));
+			body.dispatchEvent(
+				new PointerEvent('pointermove', {
+					...options,
+					buttons: 1,
+					clientX: rect.left + width,
+					clientY: rect.top + measure.offsetHeight * 2.5,
+				}),
+			);
+
+			a.equalValues(source.selection.ranges(), before);
+			(target as HTMLElement).focus();
+			await editorAction(a, target, 'keyDown', 'Alt');
+			await editorAction(a, target, 'keyDown', 'Shift');
+			await editorAction(a, target, 'press', 'ArrowDown');
+			await editorAction(a, target, 'keyUp', 'Shift');
+			await editorAction(a, target, 'keyUp', 'Alt');
+			a.equal(source.selection.ranges().length, 2);
 		});
 
 		it.testElement('select downward from the left edge', async (a: TestApi) => {

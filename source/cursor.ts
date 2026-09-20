@@ -13,19 +13,23 @@ export function sourceCursor(host: Element) {
 			ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
 		if (isVisible) {
 			ctx.fillStyle = caretColor;
-			ctx.fillRect(cursor.x, cursor.y, cursor.width, cursor.height);
+			for (const caret of carets) {
+				ctx.fillRect(caret.x, caret.y, caret.width, caret.height);
+			}
 		}
 	}
 
-	function setPosition(rect: TextRect, offset: number) {
+	function setPositions(rects: readonly TextRect[], offset: number) {
 		stopBlinking();
-		cursor = {
+		carets = rects.map(rect => ({
 			x: rect.x | 0,
 			y: (rect.y + offset) | 0,
 			width: (options.type === 'block' ? rect.width : textCursorWidth) | 0,
 			height: rect.height | 0,
 			line: rect.line,
-		};
+		}));
+		cursor = carets.at(-1) ?? cursor;
+		if (!carets.length) return;
 		startBlinking();
 	}
 
@@ -83,6 +87,7 @@ export function sourceCursor(host: Element) {
 
 	function clear() {
 		selection = [];
+		carets = [];
 		stopBlinking();
 	}
 
@@ -94,6 +99,7 @@ export function sourceCursor(host: Element) {
 	let caretColor = 'currentColor';
 	let selectionColor = 'rgba(0, 120, 215, 0.35)';
 	let selection: TextRect[] = [];
+	let carets: TextRect[] = [];
 	let isVisible = false;
 	let blinkTimer: number | undefined;
 	let cursor = {
@@ -109,7 +115,7 @@ export function sourceCursor(host: Element) {
 	return {
 		canvas,
 		resize,
-		setPosition,
+		setPositions,
 		setSelection,
 		setOptions,
 		updateStyles,
