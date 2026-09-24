@@ -325,7 +325,7 @@ export default spec('@cxl/ui.source', a => {
 		});
 	});
 
-	a.figure(
+	void a.figure(
 		'block-selection',
 		'<c-source-block-selection style="display:block;width:320px;height:96px;pointer-events:none;font:16px/20px monospace;color:#111;--cxl-source-selection:rgba(0,120,215,.35)"></c-source-block-selection>',
 		node => {
