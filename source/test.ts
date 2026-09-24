@@ -706,6 +706,17 @@ export default spec('@cxl/ui.source', a => {
 			tokenCursor.previousPage();
 			a.equal(source.cursor.index, index);
 			a.equalValues(tokenCursor.range(), { start: index, end: index });
+
+			source.setText('!');
+			source.tokenizer = failingScanner;
+			await a.sleep(20);
+			const failedIndex = source.cursor.index;
+			tokenCursor.next();
+			a.equal(source.cursor.index, failedIndex);
+			a.equalValues(tokenCursor.range(), {
+				start: failedIndex,
+				end: failedIndex,
+			});
 		});
 
 		it.testElement('finds strings with direction wrap and case options', async a => {
@@ -1445,7 +1456,7 @@ export default spec('@cxl/ui.source', a => {
 			a.equal(clipboardSelection(target), 'bc\nfg\njk');
 		});
 
-		it.testElement('stop block selection after pointer cancellation', async (a: TestApi) => {
+		it.testElement('stop block selection after pointer cleanup', async (a: TestApi) => {
 			const { source, target } = await createSourceEditor(
 				a,
 				'ABCDE\nABCDE\nABCDE',
@@ -1463,39 +1474,46 @@ export default spec('@cxl/ui.source', a => {
 				composed: true,
 				pointerId: 7,
 			};
+			const pointer = (
+				type: string,
+				line: number,
+				init: PointerEventInit = {},
+			) =>
+				body.dispatchEvent(
+					new PointerEvent(type, {
+						...options,
+						buttons: 1,
+						clientX: rect.left + width,
+						clientY: rect.top + measure.offsetHeight * (line + 0.5),
+						...init,
+					}),
+				);
 			source.setPointerCapture = () => undefined;
 			source.hasPointerCapture = () => false;
 
-			body.dispatchEvent(
-				new PointerEvent('pointerdown', {
-					...options,
-					altKey: true,
-					button: 0,
-					buttons: 1,
-					clientX: rect.left + 2,
-					clientY: rect.top + measure.offsetHeight / 2,
-				}),
-			);
-			body.dispatchEvent(
-				new PointerEvent('pointermove', {
-					...options,
-					buttons: 1,
-					clientX: rect.left + width,
-					clientY: rect.top + measure.offsetHeight * 1.5,
-				}),
-			);
+			pointer('pointerdown', 0, {
+				altKey: true,
+				button: 0,
+				clientX: rect.left + 2,
+			});
+			pointer('pointermove', 1);
 			const before = source.selection.ranges();
-			body.dispatchEvent(new PointerEvent('pointercancel', options));
-			body.dispatchEvent(
-				new PointerEvent('pointermove', {
-					...options,
-					buttons: 1,
-					clientX: rect.left + width,
-					clientY: rect.top + measure.offsetHeight * 2.5,
-				}),
-			);
+			pointer('pointercancel', 1, { buttons: 0 });
+			pointer('pointermove', 2);
 
 			a.equalValues(source.selection.ranges(), before);
+
+			pointer('pointerdown', 0, {
+				altKey: true,
+				button: 0,
+				clientX: rect.left + 2,
+			});
+			pointer('pointermove', 1);
+			const captured = source.selection.ranges();
+			pointer('lostpointercapture', 1, { buttons: 0 });
+			pointer('pointermove', 2);
+			a.equalValues(source.selection.ranges(), captured);
+
 			(target as HTMLElement).focus();
 			await editorAction(a, target, 'keyDown', 'Alt');
 			await editorAction(a, target, 'keyDown', 'Shift');
