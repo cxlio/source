@@ -2,6 +2,16 @@
 	"core": {
 		"filesExclude": ["./docs"]
 	},
+	"coaxial": {
+		"worktree": {
+			"setup": "ln -s ../../node_modules node_modules"
+		},
+		"tasks": {
+			"steps": {
+				"publish": {}
+			}
+		}
+	},
 	"watch": {
 		"rules": {
 			"source": {
