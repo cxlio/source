@@ -1,6 +1,5 @@
 import {
-	tokenize,
-	type Scanner,
+	type Highlighter,
 	type Token,
 } from '@cxl/gbc.sdk';
 
@@ -14,7 +13,7 @@ export interface SourceTokenSpan {
 	kind: string;
 }
 
-export type SourceTokenizer = Scanner<Token<string>>;
+export type SourceHighlighter = Highlighter;
 export type SourceTokenColors = Readonly<Record<string, string>>;
 type SourceReader = string | (() => string);
 
@@ -40,7 +39,7 @@ export class SourceHighlight {
 
 	reset(
 		readSource: SourceReader,
-		tokenizer?: SourceTokenizer,
+		highlighter?: SourceHighlighter,
 		retain = 0,
 		retainLine = 0,
 	) {
@@ -53,7 +52,7 @@ export class SourceHighlight {
 		);
 		for (const line of this.#lines.keys())
 			if (line >= retainLine) this.#lines.delete(line);
-		if (!tokenizer) {
+		if (!highlighter) {
 			this.#tokens = [];
 			this.#navigationTokens = [];
 			this.#lines.clear();
@@ -70,12 +69,12 @@ export class SourceHighlight {
 		let source = '';
 
 		const run = () => {
-			let done = false;
+			let done: boolean;
 			try {
 				if (!iterator) {
 					source =
 						typeof readSource === 'string' ? readSource : readSource();
-					iterator = tokenize(tokenizer, source);
+					iterator = highlighter(source);
 				}
 				const deadline = performance.now() + 4;
 				let result: IteratorResult<SourceToken>;

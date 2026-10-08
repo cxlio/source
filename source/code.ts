@@ -9,12 +9,14 @@ import {
 	property,
 	type Observable,
 } from '@cxl/ui';
+import { defaultTokenColors } from './colors.js';
+import { loadSourceHighlighter } from './modes.js';
 import { Buffer, type BufferChange } from './buffer.js';
 import {
 	SourceHighlight,
 	type SourceToken,
 	type SourceTokenColors,
-	type SourceTokenizer,
+	type SourceHighlighter,
 } from './highlight.js';
 
 /**
@@ -25,8 +27,9 @@ import {
  * @alpha
  */
 export class Code extends Component {
-	tokenizer?: SourceTokenizer;
+	mode = 'text';
 	tokenColors: SourceTokenColors = {};
+	protected activeHighlighter?: SourceHighlighter;
 	protected readonly buffer = new Buffer();
 	protected readonly highlight = new SourceHighlight((done, tokens) =>
 		this.highlighted(done, tokens),
@@ -35,14 +38,12 @@ export class Code extends Component {
 	protected initialized = false;
 	declare protected pre: HTMLPreElement;
 	protected tokens: readonly SourceToken[] = [];
+	private modeVersion = 0;
 
 	static {
 		component(Code, {
 			tagName: 'c-code',
-			init: [
-				property('tokenizer'),
-				property('tokenColors'),
-			],
+			init: [property('mode'), property('tokenColors')],
 			augment: [
 				css(`
 :host {
@@ -68,15 +69,12 @@ code { font: inherit; }
 					const renderer = $.initializeRenderer();
 					$.initialized = true;
 					$.resetRenderer();
-					$.highlight.reset(() => $.buffer.getText(), $.tokenizer);
+					$.highlight.reset(() => $.buffer.getText(), $.activeHighlighter);
 					$.setAttribute('role', 'code');
 
 					return merge(
 						renderer ?? EMPTY,
-						get($, 'tokenizer').tap(tokenizer => {
-							$.resetRenderer();
-							$.highlight.reset(() => $.buffer.getText(), tokenizer);
-						}),
+						get($, 'mode').tap(() => $.updateHighlighter()),
 						get($, 'tokenColors').tap(() => $.colorsChanged()),
 					);
 				},
@@ -95,7 +93,7 @@ code { font: inherit; }
 		this.buffer.reset(text);
 		if (this.initialized) {
 			this.resetRenderer();
-			this.highlight.reset(text, this.tokenizer);
+			this.highlight.reset(text, this.activeHighlighter);
 		}
 		this.reset();
 	}
@@ -121,11 +119,11 @@ code { font: inherit; }
 
 	protected highlighted(done: boolean, tokens: readonly SourceToken[]) {
 		this.tokens = tokens;
-		if (done && this.tokenizer) this.renderTokens(tokens);
+		if (done && this.activeHighlighter) this.renderTokens(tokens);
 	}
 
 	protected colorsChanged() {
-		if (this.tokenizer) this.renderTokens(this.tokens);
+		if (this.activeHighlighter) this.renderTokens(this.tokens);
 	}
 
 	protected renderTokens(tokens: readonly SourceToken[]) {
@@ -144,7 +142,7 @@ code { font: inherit; }
 			if (start > index) appendText(source.slice(index, start));
 			if (end > start) {
 				const value = source.slice(start, end);
-				const color = this.tokenColors[token.kind];
+				const color = this.tokenColors[token.kind] ?? defaultTokenColors[token.kind];
 				if (color) {
 					const span = create('span');
 					span.style.color = color;
@@ -167,10 +165,24 @@ code { font: inherit; }
 		this.replaced(change);
 		this.highlight.reset(
 			() => this.buffer.getText(),
-			this.tokenizer,
+			this.activeHighlighter,
 			change.start,
 			change.lineStart,
 		);
 		return change;
+	}
+
+	private updateHighlighter() {
+		const version = ++this.modeVersion;
+		this.activeHighlighter = undefined;
+		this.resetRenderer();
+		this.highlight.reset(() => this.buffer.getText(), this.activeHighlighter);
+		if (this.mode === 'text') return;
+		void loadSourceHighlighter(this.mode).then(highlighter => {
+			if (version !== this.modeVersion || !this.isConnected) return;
+			this.activeHighlighter = highlighter;
+			this.resetRenderer();
+			this.highlight.reset(() => this.buffer.getText(), highlighter);
+		}, () => {});
 	}
 }

@@ -1,4 +1,5 @@
 import { create } from '@cxl/ui';
+import { defaultTokenColors } from './colors.js';
 import { Cache } from './cache.js';
 import {
 	type SourceTokenColors,
@@ -316,8 +317,8 @@ export function textCanvas(host: HTMLElement) {
 			ctx.canvas.width = w;
 			ctx.canvas.height = h;
 			ctx.scale(dpr, dpr);
-			updateStyles();
 		} else ctx.clearRect(0, 0, canvas.width, canvas.height);
+		updateStyles();
 		hostRect = host.getBoundingClientRect();
 		measureRect = measureElement.getBoundingClientRect();
 		measurementReady = true;
@@ -498,7 +499,8 @@ export function textCanvas(host: HTMLElement) {
 	}
 
 	function setTokenColors(colors: SourceTokenColors) {
-		tokenColors = colors;
+		customTokenColors = colors;
+		updateStyles();
 	}
 
 	function updateStyles() {
@@ -508,10 +510,20 @@ export function textCanvas(host: HTMLElement) {
 		forcedColors = matchMedia('(forced-colors: active)').matches;
 		ctx.fillStyle = color;
 		ctx.textBaseline = 'alphabetic';
+		tokenColors = Object.fromEntries(
+			Object.entries({ ...defaultTokenColors, ...customTokenColors }).map(([kind, value]) => {
+				colorElement.style.color = '';
+				colorElement.style.color = value;
+				return [kind, getComputedStyle(colorElement).color || color];
+			}),
+		);
 	}
 
 	const { canvas, context: ctx } = getContext();
 	canvas.setAttribute('part', 'text');
+	const colorElement = create('span');
+	colorElement.style.display = 'none';
+	host.append(colorElement);
 	const textN = new Text();
 	const measureElement = create('div', { id: 'measure' }, textN);
 	const charRange = document.createRange();
@@ -527,6 +539,7 @@ export function textCanvas(host: HTMLElement) {
 	let color = '';
 	let forcedColors = false;
 	let tokenColors: SourceTokenColors = {};
+	let customTokenColors: SourceTokenColors = {};
 	let hostRect: DOMRect;
 	let measureRect: DOMRect;
 

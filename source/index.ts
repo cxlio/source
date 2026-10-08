@@ -31,6 +31,7 @@ import {
 } from './decoration.js';
 
 export { Code } from './code.js';
+export { loadSourceHighlighter } from './modes.js';
 export {
 	gutterMarkers,
 	lineNumbers,
@@ -44,7 +45,7 @@ export {
 	type SourceToken,
 	type SourceTokenColors,
 	type SourceTokenSpan,
-	type SourceTokenizer,
+	type SourceHighlighter,
 } from './highlight.js';
 
 export {

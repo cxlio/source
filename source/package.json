@@ -21,5 +21,15 @@
 	},
 	"build": {
 		"platform": "browser"
+	},
+	"exports": {
+		".": "./index.js",
+		"./modes/javascript": "./javascript.js",
+		"./modes/typescript": "./typescript.js",
+		"./modes/html": "./html.js",
+		"./modes/gb": "./gb.js",
+		"./modes/markdown": "./markdown.js",
+		"./modes/basic": "./basic.js",
+		"./modes/shell": "./shell.js"
 	}
 }

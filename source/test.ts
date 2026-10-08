@@ -1,12 +1,9 @@
+import { loadThemeDefinition } from '@cxl/ui';
 import { spec, type TestApi } from '@cxl/spec';
-import {
-	ScannerApi,
-	type Scanner,
-	type Token,
-} from '@cxl/gbc.sdk';
 import { Buffer } from './buffer.js';
 import {
 	Code,
+	loadSourceHighlighter,
 	Source,
 	gutterMarkers,
 	lineNumbers,
@@ -19,40 +16,12 @@ import { SourceHighlight } from './highlight.js';
 import { textCanvas, type SourceLine } from './text.js';
 
 const LargeLineCount = 100_000;
-
-type TestTokenKind = 'word' | 'number' | 'eof';
-
-const testScanner: Scanner<Token<TestTokenKind>> = source => {
-	const api = ScannerApi({ source });
-	return {
-		backtrack: api.backtrack,
-		next() {
-			api.skipWhitespace();
-			if (api.eof()) return api.tk('eof', 0);
-			const number = api.current() >= '0' && api.current() <= '9';
-			return api.tk(
-				number ? 'number' : 'word',
-				api.matchWhile(ch =>
-					number
-						? ch >= '0' && ch <= '9'
-						: ch !== ' ' && ch !== '\n',
-				),
-			);
-		},
-	};
-};
-
-const failingScanner: Scanner<Token<TestTokenKind>> = source => {
-	const api = ScannerApi({ source });
-	return {
-		backtrack: api.backtrack,
-		next() {
-			if (api.eof()) return api.tk('eof', 0);
-			if (api.current() === '!') throw new Error('Expected digit');
-			return api.tk('word', 1);
-		},
-	};
-};
+const ModeExamples = {
+	gb: "main {\n value = 'hello'\n 12 >> out\n}",
+	markdown: '# Heading\n**bold** and `code`\n[label](https://example.test)\n> quote',
+	basic: 'IF value = 12 THEN\n PRINT "hello"\nEND IF\nREM comment',
+	shell: 'if test -n "$HOME"; then\n echo "hello" | cat\nfi\n# comment',
+} as const;
 
 function createLargeSource() {
 	return Array.from(
@@ -243,6 +212,268 @@ export default spec('@cxl/ui.source', a => {
 		});
 	});
 
+	a.test('built-in modes', it => {
+		it.should('loads named scanners and shares imports', async (a: TestApi) => {
+			for (const [mode, value, kind] of [
+				['javascript', 'const value = 1;', 'keyword'],
+				['typescript', 'interface Value {}', 'keyword'],
+				['html', '<main title="hello">text</main>', 'punctuation'],
+			] as const) {
+				const first = loadSourceHighlighter(mode);
+				const second = loadSourceHighlighter(mode);
+				a.equal(first, second);
+				const scanner = await first;
+				a.assert(scanner);
+				a.equal([...scanner(value)][0]?.kind, kind);
+			}
+			a.equal(await loadSourceHighlighter('text'), undefined);
+			a.equal(await loadSourceHighlighter('unknown'), undefined);
+			a.equal(await loadSourceHighlighter('text/javascript'), undefined);
+			a.equal(await loadSourceHighlighter('cmd'), undefined);
+			for (const [mode, value] of Object.entries(ModeExamples)) {
+				const first = loadSourceHighlighter(mode);
+				a.equal(first, loadSourceHighlighter(mode));
+				const scanner = await first;
+				a.assert(scanner);
+				a.equal([...scanner(value)][0]?.kind, mode === 'markdown' ? 'heading' : 'keyword');
+			}
+		});
+
+		it.should('reports shell token positions across lines and quoted newlines', async (a: TestApi) => {
+			const scanner = await loadSourceHighlighter('shell');
+			a.assert(scanner);
+			const value = 'echo "one\ntwo"\n# comment\nif true; then\necho end\nfi';
+			const tokens = [...scanner(value)];
+			a.equal(tokens.find(token => token.kind === 'comment')?.line, 2);
+			a.equal(tokens.find(token => token.kind === 'keyword')?.line, 3);
+			a.equal(tokens[tokens.length - 1]?.line, 5);
+		});
+
+		it.should('combines Markdown blocks and inline spans without overlapping ranges', async (a: TestApi) => {
+			const scanner = await loadSourceHighlighter('markdown');
+			a.assert(scanner);
+			const value = '# Heading\n**bold** and `code`\n[label](https://example.test)\n> quote\n\n```js\nconst value = 1;\n```\n';
+			const tokens = [...scanner(value)];
+			const code = tokens.filter(token => token.kind === 'code');
+			a.equal(code.length, 2);
+			a.equal(value.slice(code[0]?.start, code[0]?.end), '`code`');
+			a.equal(value.slice(code[1]?.start, code[1]?.end), '```js\nconst value = 1;\n```');
+			a.equal(code[1]?.line, 5);
+			const link = tokens.find(token => token.kind === 'link');
+			a.assert(link);
+			a.equal(link.line, 2);
+			a.equal(value.slice(link.start, link.end), '[label](https://example.test)');
+			let end = 0;
+			for (const token of tokens) {
+				a.ok(token.start >= end && token.end <= value.length && token.end > token.start);
+				a.equal(token.source, value);
+				end = token.end;
+			}
+		});
+
+		it.should('keeps incomplete Markdown token ranges valid', async (a: TestApi) => {
+			const scanner = await loadSourceHighlighter('markdown');
+			a.assert(scanner);
+			for (const value of ['# ', '# ###\n', 'Title\n---\n', '`', '*', '[open', '   ', '```js\nconst x =']) {
+				let end = 0;
+				for (const token of scanner(value)) {
+					a.ok(token.start >= end && token.end <= value.length && token.end > token.start, value);
+					end = token.end;
+				}
+			}
+		});
+
+		it.testElement('highlights GB, Markdown, BASIC and shell in both components', async a => {
+			const code = await createCode(a, '');
+			const { source } = await createSourceEditor(a, '');
+			for (const [mode, value] of Object.entries(ModeExamples)) {
+				code.mode = source.mode = mode;
+				code.setText(value);
+				source.setText(value);
+				await loadSourceHighlighter(mode);
+				await a.sleep(40);
+				const kind = mode === 'markdown' ? 'heading' : 'keyword';
+				a.equal(code.getTokenAt(0)?.kind, kind);
+				a.equal(source.getTokenAt(0)?.kind, kind);
+				a.equal(code.shadowRoot?.querySelector('code')?.textContent, value);
+				a.equal(source.getText(), value);
+				source.cursorToken.next();
+				a.ok(source.cursor.index > 0);
+				const selection = source.selection.range();
+				source.mode = 'text';
+				await a.sleep(20);
+				a.equal(source.getTokenAt(0), undefined);
+				a.equalValues(source.selection.range(), selection);
+			}
+		});
+
+		it.testElement('defaults to plain text and highlights only a selected mode', async (a: TestApi) => {
+			const code = await createCode(a, 'const value: number = 12;');
+			a.equal(code.mode, 'text');
+			a.equal(code.getTokenAt(0), undefined);
+			a.equal(code.shadowRoot?.querySelectorAll('span').length, 0);
+			code.mode = 'typescript';
+			await loadSourceHighlighter(code.mode);
+			await a.sleep(40);
+			a.equal(code.getTokenAt(0)?.kind, 'keyword');
+			a.equal(code.getTokenAt(13)?.kind, 'type');
+			a.ok(code.shadowRoot?.querySelectorAll('span').length);
+			await a.a11y(code);
+			code.mode = 'unknown';
+			await a.sleep(40);
+			a.equal(code.getTokenAt(0), undefined);
+			a.equal(code.shadowRoot?.querySelectorAll('span').length, 0);
+		});
+
+		it.testElement('keeps the latest mode and text', async (a: TestApi) => {
+			const code = await createCode(a, 'const value = 12;');
+			code.mode = 'html';
+			code.mode = 'javascript';
+			code.setText('let value = 34;');
+			await loadSourceHighlighter(code.mode);
+			await a.sleep(40);
+			a.equal(code.getTokenAt(0)?.kind, 'keyword');
+			a.equal(code.getText(), 'let value = 34;');
+			code.mode = 'html';
+			code.setText('<main>value</main>');
+			await loadSourceHighlighter(code.mode);
+			await a.sleep(40);
+			a.equal(code.getTokenAt(1)?.kind, 'tag');
+			code.mode = 'text';
+			await a.sleep(40);
+			a.equal(code.getTokenAt(1), undefined);
+		});
+
+		it.testElement('loads preconnection modes and reconnects safely', async (a: TestApi) => {
+			const code = new Code();
+			code.mode = 'typescript';
+			code.setText('interface Value {}');
+			const host = a.element('div');
+			host.append(code);
+			code.remove();
+			await loadSourceHighlighter(code.mode);
+			code.mode = 'javascript';
+			code.setText('const value = 1;');
+			host.append(code);
+			await loadSourceHighlighter(code.mode);
+			await a.sleep(40);
+			a.equal(code.getTokenAt(0)?.kind, 'keyword');
+			a.equal(code.getText(), 'const value = 1;');
+		});
+
+		it.testElement('uses CSS theme colors and explicit HTML overrides', async (a: TestApi) => {
+			const code = await createCode(a, 'const value = "hello";');
+			code.style.setProperty('--cxl-source-keyword', 'rgb(11, 22, 33)');
+			code.style.setProperty('--cxl-source-string', 'rgb(44, 55, 66)');
+			code.mode = 'javascript';
+			await loadSourceHighlighter(code.mode);
+			await a.sleep(40);
+			const keyword = code.shadowRoot?.querySelector('span');
+			a.assert(keyword);
+			a.equal(getComputedStyle(keyword).color, 'rgb(11, 22, 33)');
+			code.style.setProperty('--cxl-source-keyword', 'rgb(77, 88, 99)');
+			a.equal(getComputedStyle(keyword).color, 'rgb(77, 88, 99)');
+			code.tokenColors = { keyword: '#010203' };
+			const override = code.shadowRoot?.querySelector('span');
+			a.assert(override);
+			a.equal(getComputedStyle(override).color, 'rgb(1, 2, 3)');
+			a.equal(
+				getComputedStyle(code.shadowRoot?.querySelector('span:last-child') ?? keyword).color,
+				'rgb(44, 55, 66)',
+			);
+		});
+
+		it.testElement('default syntax colors meet contrast on a light surface', async (a: TestApi) => {
+			const code = await createCode(a,
+				'const value: number = 12; /* comment */ const match = /value/; const text = "hello"; const template = `value`; const flag = true;',
+			);
+			code.style.backgroundColor = '#fff';
+			code.style.color = '#000';
+			code.mode = 'typescript';
+			await loadSourceHighlighter(code.mode);
+			await a.sleep(40);
+			const spans = code.shadowRoot?.querySelectorAll('span');
+			a.assert(spans?.length);
+			for (const span of spans) {
+				const channels = getComputedStyle(span).color.match(/\d+/g)?.slice(0, 3);
+				a.assert(channels?.length === 3);
+				const luminance = channels.reduce((sum, channel, index) => {
+					const value = Number(channel) / 255;
+					const linear = value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+					return sum + linear * ([0.2126, 0.7152, 0.0722][index] ?? 0);
+				}, 0);
+				a.ok(1.05 / (luminance + 0.05) >= 4.5, `contrast for ${span.textContent}`);
+			}
+		});
+
+		it.testElement('shares modes and theme colors with the canvas editor', async (a: TestApi) => {
+			const { source } = await createSourceEditor(a, 'const');
+			source.setAttribute('aria-label', 'Source code');
+			a.equal(source.mode, 'text');
+			a.equal(source.getTokenAt(0), undefined);
+			source.style.setProperty('--cxl-source-keyword', 'rgb(255, 0, 0)');
+			source.mode = 'javascript';
+			await loadSourceHighlighter(source.mode);
+			await a.sleep(40);
+			a.equal(source.getTokenAt(0)?.kind, 'keyword');
+			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="text"]');
+			const context = canvas?.getContext('2d');
+			a.assert(canvas && context);
+			const hasColor = (r: number, g: number, b: number) => {
+				const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+				return pixels.some((_, index) =>
+					index % 4 === 0 && pixels[index] === r &&
+					pixels[index + 1] === g && pixels[index + 2] === b &&
+					(pixels[index + 3] ?? 0) > 128,
+				);
+			};
+			a.ok(hasColor(255, 0, 0), 'default canvas color follows CSS');
+			source.style.setProperty('--cxl-source-keyword', 'rgb(0, 255, 0)');
+			loadThemeDefinition({ name: 'source-test' });
+			await a.sleep(40);
+			a.ok(hasColor(0, 255, 0), 'theme notification refreshes canvas colors');
+			source.tokenColors = { keyword: 'rgb(0, 0, 255)' };
+			await a.sleep(40);
+			a.ok(hasColor(0, 0, 255), 'explicit token colors override CSS');
+			await a.a11y(source);
+		});
+
+		const value = 'const value: number = 12;\nconst text = "hello";\n// comment\nconst match = /value/;\nconst template = `value`;\nconst flag = true;';
+		for (const { name, examples, width, height, rowHeight, columns } of [
+			{ name: 'syntax-highlighting', examples: { typescript: value }, width: 320, height: 296, rowHeight: 144, columns: 1 },
+			{ name: 'additional-modes', examples: ModeExamples, width: 648, height: 408, rowHeight: 96, columns: 2 },
+		]) {
+			let started = false;
+			const fixture = `<style>body{margin:0;display:grid;grid-template-columns:repeat(${columns},320px);gap:8px;background:#fff;color:#000}c-code,c-source{display:block;width:320px;height:${rowHeight}px;font:16px/24px monospace;color:#000}</style>
+<script type="importmap">${document.querySelector('script[type="importmap"]')?.textContent}</script>
+<script type="module">
+import { loadSourceHighlighter } from ${JSON.stringify(new URL('./index.js', import.meta.url).href)};
+const examples = ${JSON.stringify(examples)};
+await Promise.all(Object.keys(examples).map(loadSourceHighlighter));
+for (const [mode, value] of Object.entries(examples)) for (const tag of ['c-code', 'c-source']) {
+ const element = document.createElement(tag);
+ element.setAttribute('aria-label', mode + ' source');
+ element.mode = mode;
+ element.setText(value);
+ document.body.append(element);
+}
+await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+for (const element of document.querySelectorAll('c-source')) element.setText(element.getText());
+</script>`;
+			const figure = it.figure(
+				name,
+				`<iframe title="Syntax highlighting" style="display:block;width:${width}px;height:${height}px;border:0;pointer-events:none" srcdoc="${fixture.replaceAll('&', '&amp;').replaceAll('"', '&quot;')}"></iframe>`,
+				node => {
+					(node as HTMLElement).style.width = `${width}px`;
+					started = true;
+				},
+			);
+			it.afterAll(async () => {
+				if (started) await figure;
+			});
+		}
+	});
+
 	a.test('code', it => {
 		it.testElement('supports native pointer selection', async (a: TestApi) => {
 			const code = await createCode(a, 'one\ntwo\nthree');
@@ -277,9 +508,10 @@ export default spec('@cxl/ui.source', a => {
 
 		it.testElement('renders highlighted code without editor controls', async a => {
 			const code = await createCode(a, 'alpha 12');
-			code.tokenizer = testScanner;
+			code.mode = 'javascript';
+			await loadSourceHighlighter(code.mode);
 			code.tokenColors = {
-				word: '#0d47a1',
+				identifier: '#0d47a1',
 				number: '#e64a19',
 			};
 			await a.sleep(20);
@@ -300,7 +532,7 @@ export default spec('@cxl/ui.source', a => {
 
 			a.equal(code.getText(0, 6), '0\tvalu');
 			a.equal(content?.childNodes.length, 1);
-			a.ok(Boolean(content?.textContent?.includes('99999')));
+			a.ok(Boolean(content?.textContent.includes('99999')));
 		});
 
 		it.testElement('is the base of the source editor', async a => {
@@ -325,10 +557,12 @@ export default spec('@cxl/ui.source', a => {
 		});
 	});
 
-	void a.figure(
+	let blockSelectionFigureStarted = false;
+	const blockSelectionFigure = a.figure(
 		'block-selection',
 		'<c-source-block-selection style="display:block;width:320px;height:96px;pointer-events:none;font:16px/20px monospace;color:#111;--cxl-source-selection:rgba(0,120,215,.35)"></c-source-block-selection>',
 		node => {
+			blockSelectionFigureStarted = true;
 			(node as HTMLElement).style.pointerEvents = 'none';
 			if (customElements.get('c-source-block-selection')) return;
 			customElements.define(
@@ -350,6 +584,9 @@ export default spec('@cxl/ui.source', a => {
 			);
 		},
 	);
+	a.afterAll(async () => {
+		if (blockSelectionFigureStarted) await blockSelectionFigure;
+	});
 
 	a.test('native input', it => {
 		it.testElement('renders text set before connection after editing', async (a: TestApi) => {
@@ -361,7 +598,8 @@ export default spec('@cxl/ui.source', a => {
 			source.style.cssText =
 				'flex:1;font:14px/20px monospace;tab-size:4';
 			source.setText(value);
-			source.tokenizer = testScanner;
+			source.mode = 'javascript';
+			await loadSourceHighlighter(source.mode);
 			container.append(source);
 			container.scrollIntoView({ block: 'center' });
 			await a.sleep(75);
@@ -679,7 +917,8 @@ export default spec('@cxl/ui.source', a => {
 			tokenCursor.next();
 			a.equal(source.cursor.index, 0);
 
-			source.tokenizer = testScanner;
+			source.mode = 'javascript';
+			await loadSourceHighlighter(source.mode);
 			await a.sleep(20);
 			a.equalValues(tokenCursor.range(), { start: 0, end: 5 });
 			tokenCursor.next();
@@ -700,23 +939,12 @@ export default spec('@cxl/ui.source', a => {
 			source.edit.replace('', { start: 5, end: source.getText().length });
 			tokenCursor.goEnd();
 			a.ok(source.cursor.index <= source.getText().length);
-			source.tokenizer = undefined;
+			source.mode = 'text';
 			await a.sleep(20);
 			const index = source.cursor.index;
 			tokenCursor.previousPage();
 			a.equal(source.cursor.index, index);
 			a.equalValues(tokenCursor.range(), { start: index, end: index });
-
-			source.setText('!');
-			source.tokenizer = failingScanner;
-			await a.sleep(20);
-			const failedIndex = source.cursor.index;
-			tokenCursor.next();
-			a.equal(source.cursor.index, failedIndex);
-			a.equalValues(tokenCursor.range(), {
-				start: failedIndex,
-				end: failedIndex,
-			});
 		});
 
 		it.testElement('finds strings with direction wrap and case options', async a => {
@@ -955,7 +1183,9 @@ export default spec('@cxl/ui.source', a => {
 			subscription.unsubscribe();
 		});
 
-		it.testElement('defer and coalesce highlighting snapshots', async a => {
+		it.testElement('defer and coalesce highlighting snapshots', async (a: TestApi) => {
+			const highlighter = await loadSourceHighlighter('javascript');
+			a.assert(highlighter);
 			let source = 'alpha';
 			let snapshots = 0;
 			const highlight = new SourceHighlight(() => undefined);
@@ -964,9 +1194,9 @@ export default spec('@cxl/ui.source', a => {
 				return source;
 			};
 
-			highlight.reset(readSource, testScanner);
+			highlight.reset(readSource, highlighter);
 			source = 'alpha 12';
-			highlight.reset(readSource, testScanner, 5, 0);
+			highlight.reset(readSource, highlighter, 5, 0);
 			a.equal(snapshots, 0, 'snapshot is not built in the edit path');
 
 			await a.sleep(20);
@@ -976,9 +1206,10 @@ export default spec('@cxl/ui.source', a => {
 
 		it.testElement('exposes SDK tokenizer results publicly', async a => {
 			const { source } = await createSourceEditor(a, 'alpha 12');
-			source.tokenizer = testScanner;
+			source.mode = 'javascript';
+			await loadSourceHighlighter(source.mode);
 			source.tokenColors = {
-				word: '#0d47a1',
+				identifier: '#0d47a1',
 				number: '#e64a19',
 				error: '#b00020',
 			};
@@ -991,7 +1222,7 @@ export default spec('@cxl/ui.source', a => {
 					start: word.start,
 					end: word.end,
 				},
-				{ kind: 'word', start: 0, end: 5 },
+				{ kind: 'identifier', start: 0, end: 5 },
 			);
 			a.equalValues(
 				number && {
@@ -1002,18 +1233,18 @@ export default spec('@cxl/ui.source', a => {
 				{ kind: 'number', start: 6, end: 8 },
 			);
 
-			source.tokenizer = undefined;
+			source.mode = 'text';
 			await a.sleep(20);
 			a.equal(source.getTokenAt(2), undefined);
 		});
 
-		it.testElement('keeps rendering when pasted text breaks a tokenizer', async a => {
+		it.testElement('keeps rendering after pasting incomplete JavaScript', async a => {
 			const { source, target } = await createSourceEditor(a, 'alpha\nbeta');
 			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>(
 				'canvas[part="text"]',
 			);
 			const pasted = new DataTransfer();
-			pasted.setData('text/plain', '!pasted\nsecond');
+			pasted.setData('text/plain', '"pasted\nsecond');
 			let error = '';
 			const onError = (event: ErrorEvent) => {
 				error = event.error instanceof Error ? event.error.message : event.message;
@@ -1021,7 +1252,8 @@ export default spec('@cxl/ui.source', a => {
 			};
 			window.addEventListener('error', onError);
 			try {
-				source.tokenizer = failingScanner;
+				source.mode = 'javascript';
+				await loadSourceHighlighter(source.mode);
 				target.dispatchEvent(
 					new ClipboardEvent('paste', {
 						bubbles: true,
@@ -1034,9 +1266,9 @@ export default spec('@cxl/ui.source', a => {
 				window.removeEventListener('error', onError);
 			}
 
-			a.equal(error, '', 'tokenizer error is contained');
+			a.equal(error, '', 'incomplete JavaScript does not interrupt rendering');
 			a.ok(Boolean(canvas && paintedBounds(canvas)), 'text remains painted');
-			a.equal(source.getText(), '!pasted\nsecondalpha\nbeta');
+			a.equal(source.getText(), '"pasted\nsecondalpha\nbeta');
 		});
 
 		it.should('apply bounded textarea input changes', (a: TestApi) => {

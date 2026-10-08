@@ -1,9 +1,9 @@
 import { spec, type TestApi } from '@cxl/spec';
-import { ScannerApi, type Scanner, type Token } from '@cxl/gbc.sdk';
 import { Buffer } from './buffer.js';
 import { Code } from './code.js';
 import { gutterMarkers, Source } from './index.js';
 import { textCanvas } from './text.js';
+import { loadSourceHighlighter } from './modes.js';
 
 const LineCount = 100_000;
 const HtmlLineCount = 10_000;
@@ -12,24 +12,6 @@ const ViewportLineCount = 60;
 const MarkerCount = 10_000;
 const benchmarkOptions = { warmup: 250, sampleTime: 50, samples: 30 };
 const featureBenchmarkOptions = { warmup: 20, sampleTime: 20, samples: 10 };
-
-const navigationScanner: Scanner<Token<string>> = source => {
-	const api = ScannerApi({ source });
-	return {
-		backtrack: api.backtrack,
-		next() {
-			api.skipWhitespace();
-			if (api.eof()) return api.tk('eof', 0);
-			return api.tk(
-				'word',
-				api.matchWhile(
-					character =>
-						character !== ' ' && character !== '\n' && character !== '\t',
-				),
-			);
-		},
-	};
-};
 
 function createLargeSource(lineCount = LineCount) {
 	return Array.from(
@@ -51,7 +33,8 @@ function createTextCanvas(a: TestApi, width = 320) {
 	return text;
 }
 
-export default spec('Source line rendering benchmarks', s => {
+export default spec('Source line rendering benchmarks', async s => {
+	await Promise.all(['javascript', 'gb', 'markdown', 'basic', 'shell'].map(loadSourceHighlighter));
 	s.test('large-document html', async a => {
 		const code = a.element(Code);
 		const source = createLargeSource(HtmlLineCount);
@@ -159,7 +142,8 @@ export default spec('Source line rendering benchmarks', s => {
 	s.test('large-document cursor navigation', async a => {
 		const source = a.element(Source);
 		source.setText(createLargeSource(HistoryLineCount));
-		source.tokenizer = navigationScanner;
+		source.mode = 'javascript';
+		await loadSourceHighlighter(source.mode);
 		await a.sleep(100);
 		a.ok(
 			Boolean(source.getTokenAt(0)),
@@ -222,4 +206,22 @@ export default spec('Source line rendering benchmarks', s => {
 			return text.lineCache.get(0)?.height ?? 0;
 		}, benchmarkOptions);
 	});
+	for (const [mode, value] of Object.entries({
+		gb: "main { value = 'hello'; 12 >> out }",
+		markdown: '# Heading\nText **bold** and `code`.\n[label](https://example.test)\n\n```js\nconst value = 1;\n```\n',
+		basic: 'IF value = 12 THEN\n PRINT "hello"\nEND IF\nREM comment',
+		shell: 'if test -n "$HOME"; then\n echo "hello" | cat\nfi\n# comment',
+	})) {
+		s.test(`${mode} tokenization`, async (a: TestApi) => {
+			const scanner = await loadSourceHighlighter(mode);
+			a.assert(scanner);
+			const source = Array(200).fill(value).join('\n');
+			await a.benchmark(() => {
+				let count = 0;
+				for (const token of scanner(source)) if (token.end > token.start) count++;
+				return count;
+			}, benchmarkOptions);
+		});
+	}
+
 });
