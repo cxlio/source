@@ -307,6 +307,92 @@ export default spec('@cxl/ui.source', a => {
 			}
 		});
 
+		it.testElement('reads initial HTML content and highlights it', async (a: TestApi) => {
+			const host = a.element('div');
+			host.innerHTML = '<c-code>\n  const value = &quot;&lt;main&gt; &amp; text&quot;;\n</c-code>';
+			const code = host.querySelector('c-code');
+			a.assert(code instanceof Code);
+			code.mode = 'javascript';
+			await loadSourceHighlighter(code.mode);
+			await a.sleep(40);
+			const value = '\n  const value = "<main> & text";\n';
+			a.equal(code.getText(), value);
+			a.equal(code.shadowRoot?.querySelector('code')?.textContent, value);
+			a.equal(code.getTokenAt(3)?.kind, 'keyword');
+			code.textContent = 'pending';
+			code.setText('explicit');
+			await a.sleep(20);
+			a.equal(code.getText(), 'explicit');
+			a.equal(code.shadowRoot?.querySelector('code')?.textContent, 'explicit');
+		});
+
+		it.testElement('reads children mounted after connection and resumes on reconnect', async (a: TestApi) => {
+			const code = a.element(Code);
+			const host = code.parentElement;
+			a.assert(host);
+			code.innerHTML = '<span>first</span>';
+			await a.sleep(20);
+			a.equal(code.getText(), 'first');
+			const text = code.firstChild?.firstChild;
+			a.assert(text instanceof Text);
+			text.data = 'second';
+			await a.sleep(20);
+			a.equal(code.getText(), 'second');
+			code.remove();
+			text.data = 'third';
+			await a.sleep(20);
+			a.equal(code.getText(), 'second');
+			host.append(code);
+			await a.sleep(20);
+			a.equal(code.getText(), 'third');
+			code.replaceChildren();
+			await a.sleep(20);
+			a.equal(code.getText(), '');
+			a.equal(code.shadowRoot?.querySelector('code')?.textContent, '');
+		});
+
+		it.testElement('preserves explicit text over children and pending mutations', async (a: TestApi) => {
+			const host = a.element('div');
+			for (const value of ['', 'explicit']) {
+				const code = new Code();
+				code.textContent = 'initial';
+				code.setText(value);
+				host.append(code);
+				await a.sleep(20);
+				a.equal(code.getText(), value);
+				code.textContent = 'pending';
+				code.setText('latest');
+				await a.sleep(20);
+				a.equal(code.getText(), 'latest');
+				code.remove();
+				code.textContent = 'stale';
+				host.append(code);
+				await a.sleep(20);
+				a.equal(code.getText(), 'latest');
+				a.equal(code.shadowRoot?.querySelector('code')?.textContent, 'latest');
+			}
+		});
+
+		it.testElement('preserves editor replacements over mounted children', async (a: TestApi) => {
+			const source = a.element(Source);
+			source.style.cssText = 'width:320px;height:160px;font:12px monospace';
+			source.textContent = 'initial';
+			await a.sleep(20);
+			a.equal(source.getText(), 'initial');
+			source.edit.replace('edited', { start: 0, end: 7 });
+			source.textContent = 'stale';
+			await a.sleep(20);
+			a.equal(source.getText(), 'edited');
+		});
+
+		it.testElement('keeps a short snippet pre sized to its content', async (a: TestApi) => {
+			const code = await createCode(a, 'one line');
+			code.style.lineHeight = '20px';
+			const pre = code.shadowRoot?.querySelector('pre');
+			a.assert(pre);
+			a.equal(pre.getBoundingClientRect().height, 20);
+		});
+
 		it.testElement('defaults to plain text and highlights only a selected mode', async (a: TestApi) => {
 			const code = await createCode(a, 'const value: number = 12;');
 			a.equal(code.mode, 'text');

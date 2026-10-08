@@ -7,6 +7,8 @@ import {
 	get,
 	css,
 	property,
+	of,
+	onMutation,
 	type Observable,
 } from '@cxl/ui';
 import { defaultTokenColors } from './colors.js';
@@ -39,6 +41,7 @@ export class Code extends Component {
 	declare protected pre: HTMLPreElement;
 	protected tokens: readonly SourceToken[] = [];
 	private modeVersion = 0;
+	private explicitText = false;
 
 	static {
 		component(Code, {
@@ -56,7 +59,6 @@ pre {
 	box-sizing: border-box;
 	font: inherit;
 	margin: 0;
-	min-height: 100%;
 	white-space: pre-wrap;
 	word-break: break-word;
 }
@@ -74,6 +76,13 @@ code { font: inherit; }
 
 					return merge(
 						renderer ?? EMPTY,
+						merge(of(undefined), onMutation($, {
+							childList: true,
+							subtree: true,
+							characterData: true,
+						}))
+							.takeWhile(() => !$.explicitText)
+							.tap(() => $.resetText($.textContent)),
 						get($, 'mode').tap(() => $.updateHighlighter()),
 						get($, 'tokenColors').tap(() => $.colorsChanged()),
 					);
@@ -90,12 +99,8 @@ code { font: inherit; }
 	}
 
 	setText(text: string) {
-		this.buffer.reset(text);
-		if (this.initialized) {
-			this.resetRenderer();
-			this.highlight.reset(text, this.activeHighlighter);
-		}
-		this.reset();
+		this.explicitText = true;
+		this.resetText(text);
 	}
 
 	getTokenAt(index: number) {
@@ -161,6 +166,7 @@ code { font: inherit; }
 	protected reset() {}
 
 	protected replace(start: number, end: number, value: string) {
+		this.explicitText = true;
 		const change = this.buffer.replace(start, end, value);
 		this.replaced(change);
 		this.highlight.reset(
@@ -170,6 +176,15 @@ code { font: inherit; }
 			change.lineStart,
 		);
 		return change;
+	}
+
+	private resetText(text: string) {
+		this.buffer.reset(text);
+		if (this.initialized) {
+			this.resetRenderer();
+			this.highlight.reset(text, this.activeHighlighter);
+		}
+		this.reset();
 	}
 
 	private updateHighlighter() {
