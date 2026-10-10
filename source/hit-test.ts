@@ -51,10 +51,7 @@ export class HitTest {
 
 	#getLineAtPosition(y: number) {
 		let previous: SourceLine | undefined;
-		for (let row = this.textCanvas.firstVisibleLine; ; row++) {
-			const sourceLine = this.textCanvas.lineCache.get(row);
-			if (!sourceLine)
-				return previous && this.#getBoundaryLine(previous, false);
+		for (const sourceLine of this.textCanvas.toRender) {
 			const top = sourceLine.offsetTop;
 			if (y < top) return this.#getBoundaryLine(sourceLine, true);
 			if (y >= top && y < top + sourceLine.height) {
@@ -69,6 +66,7 @@ export class HitTest {
 			if (top > this.textCanvas.canvas.offsetHeight)
 				return this.#getBoundaryLine(sourceLine, false);
 		}
+		return previous && this.#getBoundaryLine(previous, false);
 	}
 
 	#getBoundaryLine(sourceLine: SourceLine, first: boolean) {

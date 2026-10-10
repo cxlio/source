@@ -31,11 +31,12 @@ import {
  */
 export class Code extends Component {
 	mode = 'text';
+	highlighter?: SourceHighlighter;
 	tokenColors: SourceTokenColors = {};
 	protected activeHighlighter?: SourceHighlighter;
 	protected readonly buffer = new Buffer();
-	protected readonly highlight = new SourceHighlight((done, tokens) =>
-		this.highlighted(done, tokens),
+	protected readonly highlight = new SourceHighlight((done, tokens, failed) =>
+		this.highlighted(done, tokens, failed),
 	);
 	declare protected content: HTMLElement;
 	protected initialized = false;
@@ -47,7 +48,7 @@ export class Code extends Component {
 	static {
 		component(Code, {
 			tagName: 'c-code',
-			init: [attribute('mode'), property('tokenColors')],
+			init: [attribute('mode'), property('highlighter'), property('tokenColors')],
 			augment: [
 				css(`
 :host {
@@ -85,6 +86,7 @@ code { font: inherit; }
 							.takeWhile(() => !$.explicitText)
 							.tap(() => $.resetText($.textContent)),
 						get($, 'mode').tap(() => $.updateHighlighter()),
+						get($, 'highlighter').tap(() => $.updateHighlighter()),
 						get($, 'tokenColors').tap(() => $.colorsChanged()),
 					);
 				},
@@ -123,7 +125,7 @@ code { font: inherit; }
 		this.resetRenderer();
 	}
 
-	protected highlighted(done: boolean, tokens: readonly SourceToken[]) {
+	protected highlighted(done: boolean, tokens: readonly SourceToken[], _failed = false) {
 		this.tokens = tokens;
 		if (done && this.activeHighlighter) this.renderTokens(tokens);
 	}
@@ -148,7 +150,7 @@ code { font: inherit; }
 			if (start > index) appendText(source.slice(index, start));
 			if (end > start) {
 				const value = source.slice(start, end);
-				const color = this.tokenColors[token.kind] ?? defaultTokenColors[token.kind];
+				const color = this.tokenColors[token.highlight ?? token.kind] ?? defaultTokenColors[token.highlight ?? token.kind];
 				if (color) {
 					const span = create('span');
 					span.style.color = color;
@@ -181,19 +183,19 @@ code { font: inherit; }
 
 	private resetText(text: string) {
 		this.buffer.reset(text);
+		this.reset();
 		if (this.initialized) {
 			this.resetRenderer();
 			this.highlight.reset(text, this.activeHighlighter);
 		}
-		this.reset();
 	}
 
 	private updateHighlighter() {
 		const version = ++this.modeVersion;
-		this.activeHighlighter = undefined;
+		this.activeHighlighter = this.highlighter;
 		this.resetRenderer();
 		this.highlight.reset(() => this.buffer.getText(), this.activeHighlighter);
-		if (this.mode === 'text') return;
+		if (this.highlighter || this.mode === 'text') return;
 		void loadSourceHighlighter(this.mode).then(highlighter => {
 			if (version !== this.modeVersion || !this.isConnected) return;
 			this.activeHighlighter = highlighter;

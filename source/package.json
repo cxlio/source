@@ -16,7 +16,7 @@
 	"homepage": "https://cxlio.github.io/docs/@cxl/ui.source",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/cxlio/source.git",
+		"url": "git+https://github.com/cxlio/source.git",
 		"directory": "source"
 	},
 	"build": {

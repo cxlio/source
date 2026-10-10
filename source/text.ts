@@ -415,7 +415,7 @@ export function textCanvas(host: HTMLElement) {
 	}
 
 	function getCaret({ line, ch }: TextPosition): TextRect | undefined {
-		const sourceLine = lineCache.get(line);
+		const sourceLine = toRender.find(row => row.row === line);
 		if (!sourceLine) return;
 		const parts = [...sourceLine.lines];
 		const part =

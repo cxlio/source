@@ -1,7 +1,8 @@
 import { spec, type TestApi } from '@cxl/spec';
 import { Buffer } from './buffer.js';
 import { Code } from './code.js';
-import { gutterMarkers, Source } from './index.js';
+import { foldGutter, gutterMarkers, Source } from './index.js';
+import { SourceFolding } from './fold.js';
 import { textCanvas } from './text.js';
 import { loadSourceHighlighter } from './modes.js';
 
@@ -95,6 +96,34 @@ export default spec('Source line rendering benchmarks', async s => {
 			});
 			return markers.element.firstElementChild?.childElementCount ?? 0;
 		}, featureBenchmarkOptions);
+	});
+
+	s.test('large-document fold gutter', async a => {
+		const buffer = new Buffer();
+		const value = Array<string>(MarkerCount).fill('{\nx\n}').join('\n');
+		buffer.reset(value);
+		const fold = new SourceFolding(buffer, () => 0, () => undefined);
+		fold.update(Array.from({ length: MarkerCount }, (_, block) => [
+			{ source: value, kind: '{', highlight: 'punctuation' as const, start: block * 6, end: block * 6 + 1, line: block * 3, foldStart: 1, foldEnd: 0 },
+			{ source: value, kind: '}', highlight: 'punctuation' as const, start: block * 6 + 4, end: block * 6 + 5, line: block * 3 + 2, foldStart: 0, foldEnd: 1 },
+		]).flat());
+		fold.closeAll();
+		const gutter = foldGutter(fold);
+		a.dom.append(gutter.element);
+		let firstLine = 0;
+		await a.benchmark(() => {
+			firstLine = (firstLine + ViewportLineCount) % (MarkerCount - ViewportLineCount);
+			gutter.render({
+				lines: Array.from({ length: ViewportLineCount }, (_, line) => ({
+					row: fold.lineAt(firstLine + line),
+					offsetTop: line * 16,
+					height: 16,
+				})),
+				lineCount: buffer.getLineCount(),
+				offset: 0,
+			});
+			return gutter.element.childElementCount;
+		}, { ...featureBenchmarkOptions, maxRegression: 25 });
 	});
 
 	s.test('large-document edit history', async a => {

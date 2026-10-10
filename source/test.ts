@@ -7,12 +7,16 @@ import {
 	Source,
 	gutterMarkers,
 	lineNumbers,
+	foldGutter,
+	type SourceHighlighter,
+	type SourceToken,
 	type SourceChange,
 	type SourceDecorationFragment,
 } from './index.js';
 import { createTextareaInput } from './input.js';
 import { HitTest } from './hit-test.js';
 import { SourceHighlight } from './highlight.js';
+import { SourceFolding } from './fold.js';
 import { textCanvas, type SourceLine } from './text.js';
 
 const LargeLineCount = 100_000;
@@ -22,6 +26,39 @@ const ModeExamples = {
 	basic: 'IF value = 12 THEN\n PRINT "hello"\nEND IF\nREM comment',
 	shell: 'if test -n "$HOME"; then\n echo "hello" | cat\nfi\n# comment',
 } as const;
+
+
+const foldHighlighter: SourceHighlighter = function* (source) {
+	for (const match of source.matchAll(/[{}]/g)) {
+		const start = match.index;
+		yield {
+			source,
+			start,
+			end: start + 1,
+			line: source.slice(0, start).split('\n').length - 1,
+			kind: match[0],
+			highlight: 'punctuation',
+			foldStart: match[0] === '{' ? 1 : 0,
+			foldEnd: match[0] === '}' ? 1 : 0,
+		};
+	}
+};
+
+async function createFoldEditor(a: TestApi, value: string) {
+	const { source } = await createSourceEditor(a, value);
+	source.highlighter = foldHighlighter;
+	source.gutters = [lineNumbers(), foldGutter(source.fold)];
+	await a.sleep(40);
+	return source;
+}
+
+function highlightKind(token: SourceToken | undefined) {
+	return token?.highlight ?? token?.kind;
+}
+
+function visibleLineNumbers(source: Source) {
+	return [...(source.shadowRoot?.querySelectorAll('[part~="line-number"]') ?? [])].map(element => Number(element.textContent) - 1);
+}
 
 function createLargeSource() {
 	return Array.from(
@@ -224,7 +261,7 @@ export default spec('@cxl/ui.source', a => {
 				a.equal(first, second);
 				const scanner = await first;
 				a.assert(scanner);
-				a.equal([...scanner(value)][0]?.kind, kind);
+				a.equal(highlightKind([...scanner(value)][0]), kind);
 			}
 			a.equal(await loadSourceHighlighter('text'), undefined);
 			a.equal(await loadSourceHighlighter('unknown'), undefined);
@@ -235,7 +272,7 @@ export default spec('@cxl/ui.source', a => {
 				a.equal(first, loadSourceHighlighter(mode));
 				const scanner = await first;
 				a.assert(scanner);
-				a.equal([...scanner(value)][0]?.kind, mode === 'markdown' ? 'heading' : 'keyword');
+				a.equal(highlightKind([...scanner(value)][0]), mode === 'markdown' ? 'heading' : 'keyword');
 			}
 		});
 
@@ -244,8 +281,8 @@ export default spec('@cxl/ui.source', a => {
 			a.assert(scanner);
 			const value = 'echo "one\ntwo"\n# comment\nif true; then\necho end\nfi';
 			const tokens = [...scanner(value)];
-			a.equal(tokens.find(token => token.kind === 'comment')?.line, 2);
-			a.equal(tokens.find(token => token.kind === 'keyword')?.line, 3);
+			a.equal(tokens.find(token => highlightKind(token) === 'comment')?.line, 2);
+			a.equal(tokens.find(token => highlightKind(token) === 'keyword')?.line, 3);
 			a.equal(tokens[tokens.length - 1]?.line, 5);
 		});
 
@@ -254,12 +291,12 @@ export default spec('@cxl/ui.source', a => {
 			a.assert(scanner);
 			const value = '# Heading\n**bold** and `code`\n[label](https://example.test)\n> quote\n\n```js\nconst value = 1;\n```\n';
 			const tokens = [...scanner(value)];
-			const code = tokens.filter(token => token.kind === 'code');
+			const code = tokens.filter(token => highlightKind(token) === 'code');
 			a.equal(code.length, 2);
 			a.equal(value.slice(code[0]?.start, code[0]?.end), '`code`');
 			a.equal(value.slice(code[1]?.start, code[1]?.end), '```js\nconst value = 1;\n```');
 			a.equal(code[1]?.line, 5);
-			const link = tokens.find(token => token.kind === 'link');
+			const link = tokens.find(token => highlightKind(token) === 'link');
 			a.assert(link);
 			a.equal(link.line, 2);
 			a.equal(value.slice(link.start, link.end), '[label](https://example.test)');
@@ -293,8 +330,8 @@ export default spec('@cxl/ui.source', a => {
 				await loadSourceHighlighter(mode);
 				await a.sleep(40);
 				const kind = mode === 'markdown' ? 'heading' : 'keyword';
-				a.equal(code.getTokenAt(0)?.kind, kind);
-				a.equal(source.getTokenAt(0)?.kind, kind);
+				a.equal(highlightKind(code.getTokenAt(0)), kind);
+				a.equal(highlightKind(source.getTokenAt(0)), kind);
 				a.equal(code.shadowRoot?.querySelector('code')?.textContent, value);
 				a.equal(source.getText(), value);
 				source.cursorToken.next();
@@ -329,7 +366,7 @@ export default spec('@cxl/ui.source', a => {
 			const value = '\n  const value = "<main> & text";\n';
 			a.equal(code.getText(), value);
 			a.equal(code.shadowRoot?.querySelector('code')?.textContent, value);
-			a.equal(code.getTokenAt(3)?.kind, 'keyword');
+			a.equal(highlightKind(code.getTokenAt(3)), 'keyword');
 			code.textContent = 'pending';
 			code.setText('explicit');
 			await a.sleep(20);
@@ -412,8 +449,8 @@ export default spec('@cxl/ui.source', a => {
 			code.mode = 'typescript';
 			await loadSourceHighlighter(code.mode);
 			await a.sleep(40);
-			a.equal(code.getTokenAt(0)?.kind, 'keyword');
-			a.equal(code.getTokenAt(13)?.kind, 'type');
+			a.equal(highlightKind(code.getTokenAt(0)), 'keyword');
+			a.equal(highlightKind(code.getTokenAt(13)), 'type');
 			a.ok(code.shadowRoot?.querySelectorAll('span').length);
 			await a.a11y(code);
 			code.mode = 'unknown';
@@ -429,13 +466,13 @@ export default spec('@cxl/ui.source', a => {
 			code.setText('let value = 34;');
 			await loadSourceHighlighter(code.mode);
 			await a.sleep(40);
-			a.equal(code.getTokenAt(0)?.kind, 'keyword');
+			a.equal(highlightKind(code.getTokenAt(0)), 'keyword');
 			a.equal(code.getText(), 'let value = 34;');
 			code.mode = 'html';
 			code.setText('<main>value</main>');
 			await loadSourceHighlighter(code.mode);
 			await a.sleep(40);
-			a.equal(code.getTokenAt(1)?.kind, 'tag');
+			a.equal(highlightKind(code.getTokenAt(1)), 'tag');
 			code.mode = 'text';
 			await a.sleep(40);
 			a.equal(code.getTokenAt(1), undefined);
@@ -454,7 +491,7 @@ export default spec('@cxl/ui.source', a => {
 			host.append(code);
 			await loadSourceHighlighter(code.mode);
 			await a.sleep(40);
-			a.equal(code.getTokenAt(0)?.kind, 'keyword');
+			a.equal(highlightKind(code.getTokenAt(0)), 'keyword');
 			a.equal(code.getText(), 'const value = 1;');
 		});
 
@@ -512,7 +549,7 @@ export default spec('@cxl/ui.source', a => {
 			source.mode = 'javascript';
 			await loadSourceHighlighter(source.mode);
 			await a.sleep(40);
-			a.equal(source.getTokenAt(0)?.kind, 'keyword');
+			a.equal(highlightKind(source.getTokenAt(0)), 'keyword');
 			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="text"]');
 			const context = canvas?.getContext('2d');
 			a.assert(canvas && context);
@@ -614,7 +651,7 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 			await a.sleep(20);
 
 			a.equal(code.getText(), 'alpha 12');
-			a.equal(code.getTokenAt(7)?.kind, 'number');
+			a.equal(highlightKind(code.getTokenAt(7)), 'number');
 			a.equal(code.shadowRoot?.querySelectorAll('canvas').length, 0);
 			a.equal(code.shadowRoot?.querySelectorAll('span').length, 2);
 			a.equal(code.shadowRoot?.querySelector('code')?.textContent, 'alpha 12');
@@ -1298,7 +1335,7 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 
 			await a.sleep(20);
 			a.equal(snapshots, 1, 'rapid edits share the scheduled snapshot');
-			a.equal(highlight.getTokenAt(7)?.kind, 'number');
+			a.equal(highlightKind(highlight.getTokenAt(7)), 'number');
 		});
 
 		it.testElement('exposes SDK tokenizer results publicly', async a => {
@@ -1925,6 +1962,327 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 				'',
 				'right click does not leave pointer selection active',
 			);
+		});
+	});
+
+	a.test('folding', it => {
+		let figureStarted = false;
+		const figure = it.figure('fold-gutter',
+			'<div style="display:flex;gap:8px;width:976px;height:216px;background:#fff;color:#111">' +
+			['open', 'nested', 'outer'].map(state =>
+				`<div>${state}<c-source-fold-${state} style="display:block;width:320px;height:192px;font:16px/24px monospace;color:#111"></c-source-fold-${state}></div>`,
+			).join('') + '</div>',
+			(node) => {
+				figureStarted = true;
+				(node as HTMLElement).style.width = '976px';
+				for (const [state, line] of [['open', -1], ['nested', 2], ['outer', 0]] as const) {
+					const name = `c-source-fold-${state}`;
+					if (customElements.get(name)) continue;
+					customElements.define(name, class extends Source {
+						constructor() {
+							super();
+							this.highlighter = foldHighlighter;
+							this.gutters = [lineNumbers(), foldGutter(this.fold)];
+							this.setText('{\n  outer\n  {\n    inner\n  }\n}\nafter');
+							if (line >= 0) this.fold.onChange
+								.filter(() => this.fold.range(line) !== undefined)
+								.take(1)
+								.subscribe(() => this.fold.close(line));
+						}
+					});
+				}
+			});
+		it.afterAll(async () => { if (figureStarted) await figure; });
+
+		it.testElement('paints highlight kinds and preserves syntax kinds', async (a: TestApi) => {
+			const code = await createCode(a, '{');
+			code.highlighter = foldHighlighter;
+			code.tokenColors = { punctuation: '#123456' };
+			const highlight = new SourceHighlight(() => undefined);
+			highlight.reset('{', foldHighlighter);
+			await a.sleep(40);
+			a.equal(code.getTokenAt(0)?.kind, '{');
+			a.equal(code.getTokenAt(0)?.highlight, 'punctuation');
+			a.equal(code.shadowRoot?.querySelector('span')?.style.color, 'rgb(18, 52, 86)');
+			a.equal(highlight.getTokenAt(0)?.kind, '{');
+			a.equal(highlight.getLine(0)[0]?.kind, 'punctuation');
+		});
+
+		it.testElement('discovers nested folds and implements every command', async (a: TestApi) => {
+			const source = await createFoldEditor(a, '{\nouter\n{\ninner\n}\n}\nafter');
+			a.equal(source.fold.ranges.length, 2);
+			a.equal(source.fold.range(0)?.endLine, 5);
+			a.equal(source.fold.range(1), undefined);
+			a.equal(source.fold.range(NaN), undefined);
+			source.cursorY.go(2);
+			source.fold.close();
+			source.fold.close();
+			await a.sleep(20);
+			a.equalValues(visibleLineNumbers(source), [0, 1, 2, 5, 6]);
+			source.cursorY.go(0);
+			source.fold.toggle();
+			await a.sleep(20);
+			a.equalValues(visibleLineNumbers(source), [0, 6]);
+			source.fold.open();
+			await a.sleep(20);
+			a.equalValues(visibleLineNumbers(source), [0, 1, 2, 5, 6]);
+			source.fold.openAll();
+			source.fold.openAll();
+			a.ok(source.fold.ranges.every(range => !range.closed));
+			source.fold.closeAll();
+			source.fold.closeAll();
+			await a.sleep(20);
+			a.equalValues(visibleLineNumbers(source), [0, 6]);
+			source.fold.toggle(NaN);
+			source.fold.close(-1);
+			source.fold.open(99);
+			a.ok(source.fold.ranges.every(range => range.closed));
+		});
+
+		it.testElement('keeps navigation and selections in document coordinates', async (a: TestApi) => {
+			const source = await createFoldEditor(a, '{\nhidden\n}\nafter');
+			source.fold.close();
+			await a.sleep(20);
+			source.cursorY.next();
+			a.equal(source.cursorY.index, 3);
+			source.cursorY.previous();
+			a.equal(source.cursorY.index, 0);
+			source.cursorX.goEnd();
+			source.cursor.next();
+			a.equal(source.cursor.index, 11);
+			source.cursor.previous();
+			a.equal(source.cursor.index, 1);
+			source.cursorY.nextPage();
+			a.equal(source.cursorY.index, 3);
+			source.cursorY.previousPage();
+			a.equal(source.cursorY.index, 0);
+			source.selection.set(0, source.getText().length);
+			a.ok(source.fold.ranges[0]?.closed);
+			a.equal(source.selection.range().end, source.getText().length);
+			source.selection.block(0, source.getText().length);
+			a.equal(source.selection.ranges().length, 2);
+			source.cursor.go(3);
+			a.equal(source.cursor.index, 3);
+			a.equal(source.fold.ranges[0]?.closed, false);
+			await a.sleep(20);
+			a.equalValues(visibleLineNumbers(source), [0, 1, 2, 3]);
+			source.fold.closeAll();
+			a.equal(source.cursor.index, 1, 'closing relocates a hidden caret to the header');
+		});
+
+		it.testElement('stops horizontal and token navigation at a folded document end', async (a: TestApi) => {
+			const source = await createFoldEditor(a, '{\nhidden\n}');
+			source.fold.closeAll();
+			await a.sleep(20);
+			source.cursorX.goEnd();
+			source.cursor.next();
+			a.equal(source.cursor.index, 1);
+			source.cursor.nextPage();
+			a.equal(source.cursor.index, 1);
+			a.ok(source.fold.ranges[0]?.closed);
+			source.cursor.go(0);
+			source.cursorToken.next();
+			a.equal(source.cursor.index, 0);
+			a.ok(source.fold.ranges[0]?.closed);
+		});
+
+		it.testElement('synchronizes accessible gutter toggles without losing focus', async (a: TestApi) => {
+			const source = await createFoldEditor(a, '{\nhidden\n}\nafter');
+			const button = source.shadowRoot?.querySelector<HTMLButtonElement>('[part~="fold-toggle"] button');
+			a.assert(button);
+			a.equal(button.getAttribute('aria-expanded'), 'true');
+			const cell = button.parentElement;
+			a.assert(cell);
+			const style = getComputedStyle(cell);
+			const available = cell.getBoundingClientRect().width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+			a.ok(button.getBoundingClientRect().width <= available, 'fold control fits inside its gutter cell');
+			button.focus();
+			button.click();
+			await a.sleep(20);
+			a.equal(button.getAttribute('aria-expanded'), 'false');
+			a.equal(button.getAttribute('aria-label'), 'Expand fold at line 1');
+			a.equal(source.shadowRoot?.activeElement, button);
+			button.click();
+			await a.sleep(20);
+			a.equal(button.getAttribute('aria-expanded'), 'true');
+			source.gutters = [];
+			await a.sleep(20);
+			a.equal(button.isConnected, false);
+		});
+
+		it.testElement('activates fold controls with the keyboard without editing text', async (a: TestApi) => {
+			const value = '{\nhidden\n}\nafter';
+			const source = await createFoldEditor(a, value);
+			const button = source.shadowRoot?.querySelector<HTMLButtonElement>('[part~="fold-toggle"] button');
+			a.assert(button);
+			button.focus();
+			const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true, cancelable: true });
+			button.dispatchEvent(enter);
+			a.equal(enter.defaultPrevented, false, 'button activation is not handled as editor input');
+			button.click();
+			await a.sleep(20);
+			a.equal(source.getText(), value);
+			a.equal(button.getAttribute('aria-expanded'), 'false');
+			button.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, composed: true }));
+			button.click();
+			await a.sleep(20);
+			a.equal(source.getText(), value);
+			a.equal(button.getAttribute('aria-expanded'), 'true');
+			await a.a11y(source);
+		});
+
+		it.testElement('toggles the focused gutter button with native browser keys', async (a: TestApi) => {
+			const value = '{\nhidden\n}\nafter';
+			const source = await createFoldEditor(a, value);
+			const button = source.shadowRoot?.querySelector<HTMLButtonElement>('[part~="fold-toggle"] button');
+			a.assert(button);
+			button.focus();
+			await editorAction(a, document.body, 'press', 'Enter');
+			await a.sleep(20);
+			a.equal(source.getText(), value);
+			a.equal(button.getAttribute('aria-expanded'), 'false');
+			await editorAction(a, document.body, 'press', 'Space');
+			await a.sleep(20);
+			a.equal(source.getText(), value);
+			a.equal(button.getAttribute('aria-expanded'), 'true');
+		});
+
+		it.testElement('rebases unaffected folds and rediscovers touched folds', async (a: TestApi) => {
+			const source = await createFoldEditor(a, 'before\n{\nhidden\n}\nafter');
+			source.fold.close(1);
+			source.edit.replace('prefix\n', { start: 0, end: 0 });
+			await a.sleep(40);
+			a.equal(source.fold.ranges[0]?.line, 2);
+			a.equal(source.fold.ranges[0]?.closed, true);
+			a.equalValues(visibleLineNumbers(source), [0, 1, 2, 5]);
+			const index = source.getText().indexOf('hidden');
+			source.edit.replace('changed', { start: index, end: index + 6 });
+			a.equal(source.fold.ranges.length, 0, 'touching a fold invalidates it immediately');
+			await a.sleep(40);
+			a.equal(source.fold.ranges[0]?.closed, false);
+			source.history.undo();
+			await a.sleep(40);
+			a.ok(source.getText().includes('hidden'));
+			a.equal(source.fold.ranges.length, 1);
+			source.history.redo();
+			await a.sleep(40);
+			a.ok(source.getText().includes('changed'));
+			source.setText('plain');
+			a.equal(source.fold.ranges.length, 0);
+		});
+
+		it.testElement('resets a collapsed document before projecting shorter replacement text', async (a: TestApi) => {
+			const source = await createFoldEditor(a, '{\nhidden\n}');
+			source.fold.closeAll();
+			await a.sleep(20);
+			source.setText('plain');
+			await a.sleep(20);
+			a.equal(source.fold.ranges.length, 0);
+			a.equalValues(visibleLineNumbers(source), [0]);
+			a.equal(source.shadowRoot?.querySelector('[part~="fold-toggle"]'), null);
+			source.edit.replace('\nsecond', { start: 5, end: 5 });
+			await a.sleep(20);
+			a.equalValues(visibleLineNumbers(source), [0, 1]);
+		});
+
+		it.testElement('discards stale streams, absent metadata, and changed modes', async (a: TestApi) => {
+			const source = await createFoldEditor(a, '{\nhidden\n}');
+			source.fold.closeAll();
+			source.highlighter = undefined;
+			a.equal(source.fold.ranges.length, 0);
+			source.mode = 'javascript';
+			await loadSourceHighlighter('javascript');
+			await a.sleep(40);
+			source.mode = 'text';
+			a.equal(source.fold.ranges.length, 0);
+			source.highlighter = foldHighlighter;
+			source.setText('{\nstale\n}');
+			source.setText('plain');
+			await a.sleep(40);
+			a.equal(source.fold.ranges.length, 0);
+			source.highlighter = function* (value) {
+				yield { source: value, kind: 'text', line: 0, start: 0, end: value.length };
+			};
+			await a.sleep(20);
+			a.equal(source.fold.ranges.length, 0);
+			source.fold.toggle();
+			source.fold.openAll();
+			source.fold.closeAll();
+		});
+
+		it.testElement('keeps incomplete streams open and discards failed discovery', async (a: TestApi) => {
+			const source = await createFoldEditor(a, '{\nhidden\n}');
+			source.highlighter = function* (value) {
+				yield* foldHighlighter(value);
+				throw new Error('failed stream');
+			};
+			await a.sleep(40);
+			a.equal(source.fold.ranges.length, 0);
+			a.equal(source.getText(), '{\nhidden\n}');
+			source.highlighter = foldHighlighter;
+			source.setText('{\nincomplete');
+			await a.sleep(40);
+			a.equal(source.fold.ranges.length, 0);
+			source.edit.replace('\n}', { start: source.getText().length, end: source.getText().length });
+			await a.sleep(40);
+			a.equal(source.fold.ranges.length, 1);
+		});
+
+		it.should('rejects malformed boundaries and retains only complete multiline folds', (a: TestApi) => {
+			const buffer = new Buffer();
+			buffer.reset('}\n{\n}\n{');
+			const fold = new SourceFolding(buffer, () => 1, () => undefined);
+			const tokens = [...foldHighlighter(buffer.getText())];
+			fold.update(tokens);
+			a.equal(fold.ranges.length, 1);
+			fold.close();
+			a.equal(fold.visibleCount, 3);
+			a.equal(fold.lineAt(2), 3);
+			a.equal(fold.rowAt(2), 1);
+			fold.update(tokens.map(token => ({ ...token, foldStart: NaN })));
+			a.equal(fold.ranges.length, 0);
+			buffer.reset('{}');
+			fold.update([...foldHighlighter('{}')]);
+			a.equal(fold.ranges.length, 0);
+			fold.reset();
+			a.equal(fold.visibleCount, 1);
+		});
+
+		it.testElement('hit tests visible rows across gaps and excludes hidden geometry', (a: TestApi) => {
+			const text = createTextCanvas(a, 80);
+			text.begin(0);
+			text.renderLine(0, '{');
+			text.renderLine(1, 'cached hidden');
+			text.commit(0);
+			text.begin(0);
+			text.renderLine(0, '{');
+			text.renderLine(4, 'wrapped '.repeat(4));
+			text.commit(0);
+			a.equal(text.getCaret({ line: 1, ch: 0 }), undefined);
+			const caret = text.getCaret({ line: 4, ch: 12 });
+			a.assert(caret);
+			const hit = new HitTest(text).getCaretAtPosition(caret.x, caret.y + caret.height / 2);
+			a.equal(hit?.position.line, 4);
+			a.equalValues(text.getSelectionRects({ line: 0, ch: 0 }, { line: 4, ch: 32 }).map(rect => rect.line).filter((line, index, lines) => lines.indexOf(line) === index), [0, 4]);
+		});
+
+		it.testElement('keeps folded large documents viewport bounded while scrolling', async (a: TestApi) => {
+			const value = `{\n${createLargeSource()}\n}\nafter`;
+			const source = await createFoldEditor(a, value);
+			source.fold.closeAll();
+			await a.sleep(40);
+			a.equalValues(visibleLineNumbers(source), [0, LargeLineCount + 2]);
+			source.fold.openAll();
+			await a.sleep(40);
+			source.scrollTop = source.scrollHeight;
+			await a.sleep(40);
+			const lines = visibleLineNumbers(source);
+			a.ok(lines.length > 0 && lines.length < 100);
+			a.equal(lines.at(-1), LargeLineCount + 2);
+			source.scrollTop = 0;
+			await a.sleep(40);
+			a.equal(visibleLineNumbers(source)[0], 0);
+			a.equal(source.shadowRoot?.querySelector('[part~="fold-toggle"] button')?.getAttribute('aria-expanded'), 'true');
 		});
 	});
 

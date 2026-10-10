@@ -1,5 +1,6 @@
 import { create, Subject, type Observable } from '@cxl/ui';
 import type { BufferChange } from './buffer.js';
+import type { SourceFoldFeature } from './fold.js';
 
 export interface SourceGutterLine {
 	readonly row: number;
@@ -193,4 +194,44 @@ export function lineNumbers(): SourceGutter {
 
 export function gutterMarkers(): SourceGutterMarkers {
 	return new GutterMarkers();
+}
+
+export function foldGutter(fold: SourceFoldFeature): SourceGutter {
+	const element = createPart('gutter fold-gutter');
+	element.style.width = '2ch';
+	let cells = new Map<number, HTMLElement>();
+	return {
+		element,
+		changes: fold.onChange,
+		render({ lines, offset }) {
+			const next = new Map<number, HTMLElement>();
+			for (const line of lines) {
+				const range = fold.range(line.row);
+				if (!range) continue;
+				let cell = cells.get(line.row);
+				if (!cell) {
+					const button = create('button', { type: 'button' });
+					button.onpointerdown = event => event.stopPropagation();
+					button.onkeydown = event => event.stopPropagation();
+					button.onclick = () => fold.toggle(line.row);
+					cell = createPart('gutter-element fold-toggle', button);
+				}
+				const button = cell.firstElementChild;
+				if (button) {
+					button.textContent = range.closed ? '▸' : '▾';
+					button.setAttribute('aria-expanded', String(!range.closed));
+					button.setAttribute('aria-label', `${range.closed ? 'Expand' : 'Collapse'} fold at line ${line.row + 1}`);
+				}
+				place(cell, line, offset);
+				next.set(line.row, cell);
+			}
+			for (const [line, cell] of cells) if (!next.has(line)) cell.remove();
+			for (const cell of next.values()) if (cell.parentElement !== element) element.append(cell);
+			cells = next;
+		},
+		reset() {
+			cells.clear();
+			element.replaceChildren();
+		},
+	};
 }

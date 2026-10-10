@@ -1,9 +1,9 @@
 import {
-	type Highlighter,
 	type Token,
+	type HighlightToken,
 } from '@cxl/gbc.sdk';
 
-export interface SourceToken extends Token<string> {
+export interface SourceToken extends Token<string>, Partial<Pick<HighlightToken, 'highlight' | 'foldStart' | 'foldEnd'>> {
 	state?: unknown;
 }
 
@@ -13,7 +13,7 @@ export interface SourceTokenSpan {
 	kind: string;
 }
 
-export type SourceHighlighter = Highlighter;
+export type SourceHighlighter = (source: string) => Generator<SourceToken, void>;
 export type SourceTokenColors = Readonly<Record<string, string>>;
 type SourceReader = string | (() => string);
 
@@ -34,6 +34,7 @@ export class SourceHighlight {
 		private readonly changed: (
 			done: boolean,
 			tokens: readonly SourceToken[],
+			failed: boolean,
 		) => void,
 	) {}
 
@@ -56,7 +57,7 @@ export class SourceHighlight {
 			this.#tokens = [];
 			this.#navigationTokens = [];
 			this.#lines.clear();
-			this.changed(true, this.#tokens);
+			this.changed(true, this.#tokens, false);
 			return;
 		}
 
@@ -70,6 +71,7 @@ export class SourceHighlight {
 
 		const run = () => {
 			let done: boolean;
+			let failed = false;
 			try {
 				if (!iterator) {
 					source =
@@ -95,6 +97,7 @@ export class SourceHighlight {
 				} while (performance.now() < deadline);
 			} catch {
 				done = true;
+				failed = true;
 			}
 
 			if (version !== this.#version) return;
@@ -102,7 +105,7 @@ export class SourceHighlight {
 				this.#tokens = tokens;
 				this.#navigationTokens = navigationTokens;
 				this.#lines = lines;
-				this.changed(done, this.#tokens);
+				this.changed(done, this.#tokens, failed);
 			}
 			if (!done)
 				this.#frame = requestAnimationFrame(run);
@@ -155,7 +158,7 @@ export class SourceHighlight {
 				spans.push({
 					start: start - bucket.start,
 					end: end - bucket.start,
-					kind: token.kind,
+					kind: token.highlight ?? token.kind,
 				});
 				lines.set(line, spans);
 			}

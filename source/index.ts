@@ -23,6 +23,9 @@ import { type BufferChange, type BufferPosition } from './buffer.js';
 import { createTextInput, type TextInputUpdate } from './input.js';
 import { Code } from './code.js';
 import { type SourceGutter } from './gutter.js';
+import { SourceFolding, type SourceFoldFeature } from './fold.js';
+import type { SourceToken } from './highlight.js';
+export { type SourceFoldFeature, type SourceFoldRange } from './fold.js';
 import {
 	sourceDecorations,
 	type SourceDecorationSet,
@@ -34,6 +37,7 @@ export { Code } from './code.js';
 export { loadSourceHighlighter } from './modes.js';
 export {
 	gutterMarkers,
+	foldGutter,
 	lineNumbers,
 	type SourceGutter,
 	type SourceGutterMarkers,
@@ -233,8 +237,8 @@ export class Source extends Code {
 			goEnd: () => source.selection.set(Infinity),
 			next: () => source.moveHorizontal(1),
 			previous: () => source.moveHorizontal(-1),
-			nextPage: () => source.selection.set(source.selectionHead + 10),
-			previousPage: () => source.selection.set(source.selectionHead - 10),
+			nextPage: () => source.moveHorizontal(1, 10),
+			previousPage: () => source.moveHorizontal(-1, 10),
 		};
 	})();
 	readonly cursorX: SourceCursorNavigationFeature = (() => {
@@ -291,10 +295,10 @@ export class Source extends Code {
 				source.tokenRange(from, to),
 			goStart: () => source.goToken(0),
 			goEnd: () => source.goToken(Infinity),
-			next: () => source.goToken(source.tokenIndex() + 1),
-			previous: () => source.goToken(source.tokenIndex() - 1),
-			nextPage: () => source.goToken(source.tokenIndex() + 10),
-			previousPage: () => source.goToken(source.tokenIndex() - 10),
+			next: () => source.goToken(source.tokenIndex() + 1, 1),
+			previous: () => source.goToken(source.tokenIndex() - 1, -1),
+			nextPage: () => source.goToken(source.tokenIndex() + 10, 1),
+			previousPage: () => source.goToken(source.tokenIndex() - 10, -1),
 		};
 	})();
 	readonly selection: SourceSelectionFeature = (() => {
@@ -423,6 +427,18 @@ export class Source extends Code {
 			for (const range of ranges) this.edit.replace(value, range);
 		},
 	};
+	protected readonly folding = new SourceFolding(
+		this.buffer,
+		() => this.cursorY.index,
+		() => {
+			this.refresh.next({ dataLength: this.folding.visibleCount, resetFrom: 0 });
+			const selections = this.selectionSnapshot().map(({ anchor, head }) => ({
+				anchor: this.foldBoundary(anchor),
+				head: this.foldBoundary(head),
+			}));
+			this.setSelectionsState(selections, false);
+		},
+	);
 	protected activeSearch?: ActiveSearch;
 	protected blockAnchor?: number;
 	protected readonly changeSubject = new Subject<SourceChange>();
@@ -438,7 +454,7 @@ export class Source extends Code {
 	protected offsetY = 0;
 	protected readonly redoRecords: HistoryRecord[] = [];
 	protected redoSize = 0;
-	protected readonly refresh = new ReplaySubject<{ dataLength: number }>(1);
+	protected readonly refresh = new ReplaySubject<{ dataLength: number; resetFrom?: number }>(1);
 	protected selectionSync?: (scroll: boolean) => void;
 	protected readonly text = textCanvas(this.host);
 	protected readonly hitTest = new HitTest(this.text);
@@ -555,6 +571,13 @@ canvas {
 	height: 100%;
 	width: 100%;
 }
+#gutters [part~="fold-toggle"],
+#gutters [part~="fold-toggle"] > button { padding: 0; }
+#gutters [part~="fold-toggle"] > button {
+	background: transparent;
+	border: 0;
+	color: inherit;
+}
 #measure {
 	visibility:hidden;
 	position: absolute;
@@ -664,7 +687,7 @@ canvas {
 								$.scrollTop += top + caret.height - $.clientHeight;
 						} else {
 							const lineHeight = text.measureElement.offsetHeight || 16;
-							$.scrollTop = position.line * lineHeight;
+							$.scrollTop = $.folding.rowAt(position.line) * lineHeight;
 						}
 					}
 
@@ -835,6 +858,7 @@ canvas {
 					}
 
 					function resetEditor() {
+						$.folding.reset();
 						$.clearHistory();
 						$.blockAnchor = undefined;
 						$.selectionExtending = false;
@@ -930,7 +954,7 @@ canvas {
 								$.gutterHost.replaceChildren(
 									...gutters.map(gutter => gutter.element),
 								);
-								$.refresh.next({ dataLength: buffer.getLineCount() });
+								$.refresh.next({ dataLength: $.folding.visibleCount });
 							})
 							.switchMap(gutters => {
 								const changes = gutters.flatMap(gutter =>
@@ -939,7 +963,7 @@ canvas {
 								return changes.length ? merge(...changes) : EMPTY;
 							})
 							.tap(() =>
-								$.refresh.next({ dataLength: buffer.getLineCount() }),
+								$.refresh.next({ dataLength: $.folding.visibleCount }),
 							),
 					);
 				},
@@ -954,6 +978,10 @@ canvas {
 
 	get decorations(): SourceDecorationsFeature {
 		return this.decorationRenderer;
+	}
+
+	get fold(): SourceFoldFeature {
+		return this.folding;
 	}
 
 	protected get selectionAnchor() {
@@ -973,21 +1001,21 @@ canvas {
 		this.selection.set(this.buffer.indexAt({ line, ch }));
 	}
 
-	protected moveHorizontal(direction: -1 | 1) {
-		let next = this.selectionHead + direction;
-		if (
-			direction === 1 &&
-			this.buffer.charAt(this.selectionHead) === '\r' &&
-			this.buffer.charAt(this.selectionHead + 1) === '\n'
-		)
-			next++;
-		else if (
-			direction === -1 &&
-			this.buffer.charAt(this.selectionHead - 2) === '\r' &&
-			this.buffer.charAt(this.selectionHead - 1) === '\n'
-		)
-			next--;
-		this.selection.set(next);
+	protected moveHorizontal(direction: -1 | 1, count = 1) {
+		let index = this.selectionHead;
+		for (let i = 0; i < count; i++) {
+			let next = index + direction;
+			if (direction === 1 && this.buffer.charAt(index) === '\r' && this.buffer.charAt(index + 1) === '\n') next++;
+			else if (direction === -1 && this.buffer.charAt(index - 2) === '\r' && this.buffer.charAt(index - 1) === '\n') next--;
+			const line = this.buffer.positionAt(this.clampSelection(next)).line;
+			if (this.folding.isHidden(line)) {
+				const row = this.folding.rowAt(line) + (direction === 1 ? 1 : 0);
+				if (row >= this.folding.visibleCount) break;
+				next = this.buffer.indexAt({ line: this.folding.lineAt(row), ch: direction === 1 ? 0 : Infinity });
+			}
+			index = this.clampSelection(next);
+		}
+		this.selection.set(index);
 	}
 
 	protected goLine(line: number) {
@@ -1009,7 +1037,7 @@ canvas {
 		}
 		if (next === undefined || next === this.selectionHead)
 			next = this.buffer.indexAt({
-				line: position.line + direction,
+				line: this.folding.lineAt(this.folding.rowAt(position.line) + direction),
 				ch: position.ch,
 			});
 		this.setSelectionState(next, next, true, true);
@@ -1020,7 +1048,7 @@ canvas {
 		const lineHeight = this.text.measureElement.offsetHeight || 16;
 		const lines = Math.max(1, Math.floor(this.clientHeight / lineHeight));
 		const next = this.buffer.indexAt({
-			line: position.line + direction * lines,
+			line: this.folding.lineAt(this.folding.rowAt(position.line) + direction * lines),
 			ch: position.ch,
 		});
 		this.setSelectionState(next, next, true, true);
@@ -1052,10 +1080,22 @@ canvas {
 		};
 	}
 
-	protected goToken(index: number) {
+	protected goToken(index: number, direction?: -1 | 1) {
 		const tokens = this.highlight.getNavigationTokens();
 		if (!tokens.length) return;
 		index = this.normalizeOrdinal(index, tokens.length);
+		if (direction) {
+			while (index >= 0 && index < tokens.length) {
+				const token = tokens[index];
+				if (token && !this.folding.isHidden(this.buffer.positionAt(token.start).line)) break;
+				index += direction;
+			}
+			if (index < 0 || index >= tokens.length) {
+				const boundary = index < 0 ? 0 : this.buffer.length;
+				if (!this.folding.isHidden(this.buffer.positionAt(boundary).line)) this.selection.set(boundary);
+				return;
+			}
+		}
 		this.selection.set(tokens[index]?.start ?? this.buffer.length);
 	}
 
@@ -1341,18 +1381,20 @@ canvas {
 		head = this.clampSelection(head);
 		const anchorPosition = this.buffer.positionAt(anchor);
 		const headPosition = this.buffer.positionAt(head);
-		const direction = anchorPosition.line <= headPosition.line ? 1 : -1;
+		this.folding.reveal(anchorPosition.line);
+		this.folding.reveal(headPosition.line);
+		const folded = this.folding.hasHiddenLines;
+		const from = folded ? this.folding.rowAt(anchorPosition.line) : anchorPosition.line;
+		const to = folded ? this.folding.rowAt(headPosition.line) : headPosition.line;
+		const direction = from <= to ? 1 : -1;
 		const selections: SourceSelection[] = [];
-		for (
-			let line = anchorPosition.line;
-			;
-			line += direction
-		) {
+		for (let row = from; ; row += direction) {
+			const line = folded ? this.folding.lineAt(row) : row;
 			selections.push({
 				anchor: this.buffer.indexAt({ line, ch: anchorPosition.ch }),
 				head: this.buffer.indexAt({ line, ch: headPosition.ch }),
 			});
-			if (line === headPosition.line) break;
+			if (row === to) break;
 		}
 		this.blockAnchor = anchor;
 		this.setSelectionsState(selections, scroll);
@@ -1382,6 +1424,10 @@ canvas {
 				head: this.clampSelection(head),
 			}),
 		);
+		if (this.folding.hasHiddenLines) for (const selection of next) {
+			this.folding.reveal(this.buffer.positionAt(selection.anchor).line);
+			this.folding.reveal(this.buffer.positionAt(selection.head).line);
+		}
 		const changed = !this.selectionsEqual(this.selectionState, next);
 		this.selectionState = next;
 		this.selectionSync?.(scroll);
@@ -1436,7 +1482,7 @@ canvas {
 		);
 		this.shadowRoot?.append(host);
 		this.updateSearchDecorationStyle();
-		refresh.next({ dataLength: this.buffer.getLineCount() });
+		refresh.next({ dataLength: this.folding.visibleCount });
 
 		return merge(
 			onResize(host).raf(() => {
@@ -1453,14 +1499,15 @@ canvas {
 				scrollContainer: this.shadowRoot ?? undefined,
 				refresh,
 				render: (index, order) => {
-					if (order === 0) text.begin(index);
+					const line = this.folding.lineAt(index);
+					if (order === 0) text.begin(line);
 					return text.renderLine(
-						index,
-						this.buffer.getLine(index),
-						this.highlight.getLine(index),
+						line,
+						this.buffer.getLine(line),
+						this.highlight.getLine(line),
 					);
 				},
-				dataLength: this.buffer.getLineCount(),
+				dataLength: this.folding.visibleCount,
 				translate: false,
 			}).tap(event => {
 				this.offsetY = event.offset;
@@ -1478,17 +1525,18 @@ canvas {
 			onThemeChange.tap(() => {
 				text.updateStyles();
 				this.updateSearchDecorationStyle();
-				refresh.next({ dataLength: this.buffer.getLineCount() });
+				refresh.next({ dataLength: this.folding.visibleCount });
 			}),
 		);
 	}
 
 	protected override resetRenderer() {
 		this.text.resize();
-		this.refresh.next({ dataLength: this.buffer.getLineCount() });
+		this.refresh.next({ dataLength: this.folding.visibleCount, resetFrom: 0 });
 	}
 
 	protected override replaced(change: BufferChange) {
+		this.folding.replaced(change);
 		for (const gutter of this.gutters) gutter.replaced?.(change);
 		this.text.invalidate(
 			change.lineStart,
@@ -1498,21 +1546,23 @@ canvas {
 		this.decorationRenderer.replaced(change);
 		if (this.searchHighlight)
 			this.highlightSearch(this.searchHighlight.query, this.searchHighlight);
-		this.refresh.next({ dataLength: this.buffer.getLineCount() });
+		this.refresh.next({ dataLength: this.folding.visibleCount });
 	}
 
-	protected override highlighted() {
-		this.refresh.next({ dataLength: this.buffer.getLineCount() });
+	protected override highlighted(done: boolean, tokens: readonly SourceToken[], failed = false) {
+		if (done) this.folding.update(failed ? [] : tokens);
+		this.refresh.next({ dataLength: this.folding.visibleCount });
 	}
 
 	protected override colorsChanged() {
 		this.text.setTokenColors(this.tokenColors);
-		this.refresh.next({ dataLength: this.buffer.getLineCount() });
+		this.refresh.next({ dataLength: this.folding.visibleCount });
 	}
 
 	protected override rendered() {}
 
 	protected override reset() {
+		this.folding.reset();
 		this.clearHistory();
 		this.selectionExtending = false;
 		for (const gutter of this.gutters) gutter.reset?.();
@@ -1520,6 +1570,14 @@ canvas {
 		if (this.searchHighlight)
 			this.highlightSearch(this.searchHighlight.query, this.searchHighlight);
 		this.setSelectionsState(this.selectionSnapshot(), false);
+	}
+
+	private foldBoundary(index: number) {
+		if (!this.folding.hasHiddenLines) return index;
+		const line = this.buffer.positionAt(index).line;
+		return this.folding.isHidden(line)
+			? this.buffer.indexAt({ line: this.folding.lineAt(this.folding.rowAt(line)), ch: Infinity })
+			: index;
 	}
 
 	private clampSelection(index: number) {
