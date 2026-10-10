@@ -6,6 +6,7 @@ import {
 	create,
 	get,
 	css,
+	attribute,
 	property,
 	of,
 	onMutation,
@@ -46,7 +47,7 @@ export class Code extends Component {
 	static {
 		component(Code, {
 			tagName: 'c-code',
-			init: [property('mode'), property('tokenColors')],
+			init: [attribute('mode'), property('tokenColors')],
 			augment: [
 				css(`
 :host {

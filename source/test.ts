@@ -307,6 +307,17 @@ export default spec('@cxl/ui.source', a => {
 			}
 		});
 
+		it.testElement('observes declarative mode attributes in both components', (a: TestApi) => {
+			const host = a.element('div');
+			host.innerHTML = '<c-code mode="javascript">const value = 1;</c-code><c-source mode="javascript">const value = 1;</c-source>';
+			for (const element of host.children) {
+				a.assert(element instanceof Code);
+				a.equal(element.mode, 'javascript');
+				element.setAttribute('mode', 'text');
+				a.equal(element.mode, 'text');
+			}
+		});
+
 		it.testElement('reads initial HTML content and highlights it', async (a: TestApi) => {
 			const host = a.element('div');
 			host.innerHTML = '<c-code>\n  const value = &quot;&lt;main&gt; &amp; text&quot;;\n</c-code>';
