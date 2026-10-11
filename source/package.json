@@ -30,6 +30,7 @@
 		"./modes/gb": "./gb.js",
 		"./modes/markdown": "./markdown.js",
 		"./modes/basic": "./basic.js",
-		"./modes/shell": "./shell.js"
+		"./modes/shell": "./shell.js",
+		"./modes/json": "./json.js"
 	}
 }

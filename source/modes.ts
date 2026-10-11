@@ -4,6 +4,7 @@ const modules = {
 	javascript: () => import('./javascript.js'),
 	typescript: () => import('./typescript.js'),
 	html: () => import('./html.js'),
+	json: () => import('./json.js'),
 	gb: () => import('./gb.js'),
 	markdown: () => import('./markdown.js'),
 	basic: () => import('./basic.js'),
@@ -15,7 +16,7 @@ const pending = new Map<Mode, Promise<SourceHighlighter>>();
 
 export function loadSourceHighlighter(mode: string): Promise<SourceHighlighter | undefined> {
 	if (mode !== 'javascript' && mode !== 'typescript' && mode !== 'html' &&
-		mode !== 'gb' && mode !== 'markdown' && mode !== 'basic' && mode !== 'shell')
+		mode !== 'json' && mode !== 'gb' && mode !== 'markdown' && mode !== 'basic' && mode !== 'shell')
 		return Promise.resolve(undefined);
 	let result = pending.get(mode);
 	if (!result) {

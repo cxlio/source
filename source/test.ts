@@ -17,6 +17,7 @@ import { createTextareaInput } from './input.js';
 import { HitTest } from './hit-test.js';
 import { SourceHighlight } from './highlight.js';
 import { SourceFolding } from './fold.js';
+import jsonHighlighter from './json.js';
 import { textCanvas, type SourceLine } from './text.js';
 
 const LargeLineCount = 100_000;
@@ -255,6 +256,7 @@ export default spec('@cxl/ui.source', a => {
 				['javascript', 'const value = 1;', 'keyword'],
 				['typescript', 'interface Value {}', 'keyword'],
 				['html', '<main title="hello">text</main>', 'punctuation'],
+				['json', '{"value": 1}', 'punctuation'],
 			] as const) {
 				const first = loadSourceHighlighter(mode);
 				const second = loadSourceHighlighter(mode);
@@ -274,6 +276,51 @@ export default spec('@cxl/ui.source', a => {
 				a.assert(scanner);
 				a.equal(highlightKind([...scanner(value)][0]), mode === 'markdown' ? 'heading' : 'keyword');
 			}
+		});
+
+		it.should('highlights JSON values and nested fold boundaries', async (a: TestApi) => {
+			const scanner = await loadSourceHighlighter('json');
+			a.equal(scanner, jsonHighlighter);
+			const value = '{\n "items": [\n "hello", -1.5e2, true, false, null\n ]\n}';
+			const tokens = [...jsonHighlighter(value)];
+			a.equalValues(tokens.filter(token => ['string', 'number', 'true', 'false', 'null'].includes(token.kind)).map(highlightKind),
+				['attribute', 'string', 'number', 'literal', 'literal', 'literal']);
+			a.equalValues(tokens.filter(token => token.foldStart).map(token => token.kind), ['{', '[']);
+			a.equalValues(tokens.filter(token => token.foldEnd).map(token => token.kind), [']', '}']);
+			for (const input of [value, '', '{"items": [', '{"value": "open']) {
+				let end = 0;
+				for (const token of jsonHighlighter(input)) {
+					a.ok(token.start >= end && token.end >= token.start && token.end <= input.length);
+					a.equal(token.source, input);
+					end = token.end;
+				}
+			}
+		});
+
+		it.testElement('highlights JSON in both components and folds nested values', async a => {
+			const value = '{\n "items": [\n "hello", 1, true, null\n ]\n}';
+			const code = await createCode(a, value);
+			const { source } = await createSourceEditor(a, value);
+			code.mode = source.mode = 'json';
+			await loadSourceHighlighter('json');
+			await a.sleep(40);
+			for (const element of [code, source]) {
+				a.equal(highlightKind(element.getTokenAt(value.indexOf('"items"'))), 'attribute');
+				a.equal(highlightKind(element.getTokenAt(value.indexOf('"hello"'))), 'string');
+				a.equal(highlightKind(element.getTokenAt(value.indexOf('true'))), 'literal');
+			}
+			a.equal(code.shadowRoot?.querySelector('code')?.textContent, value);
+			a.equal(source.getText(), value);
+			a.equal(source.fold.ranges.length, 2);
+			source.fold.close(1);
+			a.equal(source.fold.range(1)?.closed, true);
+			source.fold.open(1);
+			a.equal(source.fold.range(1)?.closed, false);
+			code.mode = source.mode = 'text';
+			await a.sleep(20);
+			a.equal(code.getTokenAt(0), undefined);
+			a.equal(source.getTokenAt(0), undefined);
+			a.equal(source.fold.ranges.length, 0);
 		});
 
 		it.should('reports shell token positions across lines and quoted newlines', async (a: TestApi) => {
