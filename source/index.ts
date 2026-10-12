@@ -1520,6 +1520,10 @@ canvas {
 						offset: event.offset,
 					});
 				this.rendered();
+				const last = text.toRender.at(-1);
+				if (event.end < this.folding.visibleCount && last &&
+					event.offset + last.offsetTop + last.height < host.clientHeight)
+					refresh.next({ dataLength: this.folding.visibleCount });
 			}),
 			onFontsReady().tap(() => this.resetRenderer()),
 			onThemeChange.tap(() => {

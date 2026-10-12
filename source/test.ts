@@ -197,6 +197,41 @@ async function editorValue(a: TestApi, element: Element) {
 
 export default spec('@cxl/ui.source', a => {
 	a.test('demo', it => {
+		let figureStarted = false;
+		const figure = it.figure('folding-demo',
+			'<iframe title="Source folding demo" src="../../docs/demo/index.html" style="display:block;width:1200px;height:900px;border:0"></iframe>',
+			node => {
+				figureStarted = true;
+				(node as HTMLElement).style.width = '1200px';
+			},
+		);
+		it.afterAll(async () => { if (figureStarted) await figure; });
+		it.testElement('renders the complete sample on load when it fits the viewport', async (a: TestApi) => {
+			const frame = a.element('iframe');
+			frame.style.cssText = 'display:block;width:1200px;height:900px;border:0';
+			const loaded = new Promise<void>(resolve =>
+				frame.addEventListener('load', () => resolve(), { once: true }),
+			);
+			frame.src = '../../docs/demo/index.html';
+			await loaded;
+			await a.sleep(100);
+			const source = frame.contentDocument?.querySelector('c-source') as
+				| (HTMLElement & Pick<Source, 'getText'>)
+				| null;
+			a.assert(source, 'demo editor exists');
+			const lineCount = source.getText().split('\n').length;
+			a.equal(lineCount, 30);
+			a.equal(source.scrollTop, 0);
+			a.ok(source.clientHeight >= lineCount * 21 + 24, 'sample fits without scrolling');
+			const rows = source.shadowRoot?.querySelectorAll('[part~=line-number]');
+			a.equal(rows?.length, lineCount, 'every document line is rendered on load');
+			a.equal(rows?.[lineCount - 1]?.textContent, String(lineCount));
+			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="text"]');
+			a.assert(canvas, 'demo canvas exists');
+			const bounds = paintedBounds(canvas);
+			a.assert(bounds, 'demo sample is painted');
+			a.ok(bounds.bottom >= (lineCount - 1) * 21, 'final sample line is painted on load');
+		});
 		it.testElement('loads as a self-contained static page', async (a: TestApi) => {
 			const path = '../../docs/demo/index.html';
 			const frame = a.element('iframe');
@@ -215,11 +250,23 @@ export default spec('@cxl/ui.source', a => {
 				'demo editor initializes',
 			);
 			const source = editor as HTMLElement &
-				Pick<Source, 'getText' | 'selection'>;
+				Pick<Source, 'getText' | 'selection' | 'mode' | 'fold' | 'getTokenAt'>;
 			frame.scrollIntoView({ block: 'center' });
 			source.scrollIntoView({ block: 'center' });
 			await a.sleep(75);
-			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas');
+			a.equal(source.mode, 'javascript');
+			a.equal(highlightKind(source.getTokenAt(0)), 'keyword');
+			a.ok(source.fold.ranges.length > 1, 'sample contains nested language folds');
+			const original = source.getText();
+			const toggle = source.shadowRoot?.querySelector<HTMLButtonElement>('[part~=fold-toggle] button');
+			a.assert(toggle, 'demo exposes fold controls');
+			toggle.click();
+			await a.sleep(40);
+			a.equal(toggle.getAttribute('aria-expanded'), 'false');
+			a.equal(source.getText(), original);
+			toggle.click();
+			a.equal(source.getText(), original);
+			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="text"]');
 			a.assert(canvas, 'demo editor canvas exists');
 			const bounds = paintedBounds(canvas);
 			a.assert(bounds, 'wrapped text is painted');

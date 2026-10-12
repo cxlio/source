@@ -87,51 +87,38 @@
 		<main><c-source id="source" aria-label="Source editor"></c-source></main>
 		<footer><span id="status" role="status">Ready</span><span id="position">Ln 1, Col 1 · 0 selected</span></footer>
 		<script type="module">
-			import { gutterMarkers, lineNumbers } from './index.bundle.js';
+			import { foldGutter, gutterMarkers, lineNumbers } from './index.bundle.js';
 
-			const sample = `import { Source } from '@cxl/ui.source';
+			const sample = `import { Source, foldGutter, lineNumbers } from '@cxl/ui.source';
 
-const source = new Source();
-source.setText('Fast editing for very large files');
-source.search.find('large');
-source.history.undo();
+function createEditor(files) {
+    const source = new Source();
+    source.mode = 'javascript';
+    source.gutters = [lineNumbers(), foldGutter(source.fold)];
 
-document.body.append(source);`;
-			const keywords = new Set(['const', 'export', 'from', 'import', 'new', 'return']);
-			const tokenizer = value => {
-				let index = 0;
-				let line = 0;
-				const token = (kind, start, end, tokenLine = line) => ({ kind, start, end, line: tokenLine, source: value });
-				return {
-					backtrack(current) { index = current.end; line = current.line; },
-					next() {
-						while (/\s/.test(value[index] ?? '')) if (value[index++] === '\n') line++;
-						const start = index;
-						const tokenLine = line;
-						if (index >= value.length) return token('eof', index, index);
-						if (value.startsWith('//', index)) {
-							while (index < value.length && value[index] !== '\n') index++;
-							return token('comment', start, index, tokenLine);
-						}
-						if (value[index] === "'" || value[index] === '"') {
-							const quote = value[index++];
-							while (index < value.length && value[index] !== quote) index++;
-							if (value[index] === quote) index++;
-							return token('string', start, index, tokenLine);
-						}
-						if (/\d/.test(value[index] ?? '')) {
-							while (/\d/.test(value[index] ?? '')) index++;
-							return token('number', start, index, tokenLine);
-						}
-						if (/[A-Za-z_$]/.test(value[index] ?? '')) {
-							while (/[\w$]/.test(value[index] ?? '')) index++;
-							return token(keywords.has(value.slice(start, index)) ? 'keyword' : 'identifier', start, index, tokenLine);
-						}
-						index++;
-						return token('punctuation', start, index, tokenLine);
-					},
-				};
-			};
+    function openFile(name) {
+        const file = files.find(file => file.name === name);
+        if (file) {
+            source.setText(file.content);
+            source.fold.openAll();
+        }
+    }
+
+    source.changes.subscribe(() => {
+        const activeFile = files.find(file => file.name === 'app.js');
+        if (activeFile) {
+            activeFile.content = source.getText();
+        }
+    });
+
+    openFile('app.js');
+    document.body.append(source);
+    return source;
+}
+
+createEditor([
+    { name: 'app.js', content: 'console.log("Ready to edit");' },
+]);`;
 
 			const source = document.getElementById('source');
 			const status = document.getElementById('status');
@@ -139,6 +126,7 @@ document.body.append(source);`;
 			const find = document.getElementById('find');
 			const replace = document.getElementById('replace');
 			const lineGutter = lineNumbers();
+			const foldingGutter = foldGutter(source.fold);
 			const markerGutter = gutterMarkers();
 			const marker = document.createElement('span');
 			marker.part.add('marker');
@@ -147,7 +135,7 @@ document.body.append(source);`;
 			markerGutter.setGutterMarker(3, 'diagnostics', marker);
 
 			const updateGutters = () => {
-				const gutters = [];
+				const gutters = [foldingGutter];
 				if (document.getElementById('lines').checked) gutters.push(lineGutter);
 				if (document.getElementById('markers').checked) gutters.push(markerGutter);
 				source.gutters = gutters;
@@ -172,7 +160,7 @@ document.body.append(source);`;
 				getComputedStyle(document.documentElement)
 					.getPropertyValue(`--ide-${name}`)
 					.trim();
-			source.tokenizer = tokenizer;
+			source.mode = 'javascript';
 			source.tokenColors = {
 				comment: themeColor('comment'),
 				identifier: themeColor('variable'),
@@ -206,7 +194,7 @@ document.body.append(source);`;
 			document.getElementById('undo').addEventListener('click', () => { source.history.undo(); status.textContent = 'Undo'; });
 			document.getElementById('redo').addEventListener('click', () => { source.history.redo(); status.textContent = 'Redo'; });
 			document.getElementById('highlight').addEventListener('change', event => {
-				source.tokenizer = event.target.checked ? tokenizer : undefined;
+				source.mode = event.target.checked ? 'javascript' : 'text';
 				status.textContent = event.target.checked ? 'Highlighting on' : 'Highlighting off';
 			});
 			document.getElementById('lines').addEventListener('change', updateGutters);
