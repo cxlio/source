@@ -586,6 +586,14 @@ canvas {
 	white-space: pre-wrap;
 	word-break: break-word;
 }
+#fold-measure, [part="fold-placeholder"] {
+	box-sizing: border-box;
+	border: 1px solid currentColor;
+	border-radius: 0.25em;
+	text-align: center;
+	width: 2ch;
+	line-height: inherit;
+}
 #input {
 	position: fixed;
 	width: 1px;
@@ -1478,6 +1486,7 @@ canvas {
 			decorationRenderer.behindCanvas,
 			text.canvas,
 			decorationRenderer.aboveCanvas,
+			text.foldHost,
 			text.measureElement,
 		);
 		this.shadowRoot?.append(host);
@@ -1505,6 +1514,7 @@ canvas {
 						line,
 						this.buffer.getLine(line),
 						this.highlight.getLine(line),
+						this.folding.range(line)?.closed,
 					);
 				},
 				dataLength: this.folding.visibleCount,

@@ -34,6 +34,7 @@ export type SourceLine = {
 	text: string;
 	row: number;
 	offsetTop: number;
+	collapsed: boolean;
 };
 
 export interface TextPosition {
@@ -231,6 +232,7 @@ export function textCanvas(host: HTMLElement) {
 		const { text, lines } = sourceLine;
 
 		textN.textContent = text || ' ';
+		foldMeasure.style.display = sourceLine.collapsed ? 'inline-block' : 'none';
 
 		const maxY = host.offsetHeight + offsetY;
 		const startLine: [number, number] | undefined = offsetY
@@ -265,12 +267,13 @@ export function textCanvas(host: HTMLElement) {
 		return result;
 	}
 
-	function measure(text: string, row: number): SourceLine {
+	function measure(text: string, row: number, collapsed: boolean): SourceLine {
 		const cache = lineCache.get(row);
-		if (cache) return cache;
+		if (cache?.collapsed === collapsed) return cache;
 
 		const lines = new Cache<number, SubLine>();
 		textN.textContent = text || ' ';
+		foldMeasure.style.display = collapsed ? 'inline-block' : 'none';
 
 		return lineCache.set(row, {
 			lines,
@@ -280,6 +283,7 @@ export function textCanvas(host: HTMLElement) {
 			text,
 			row,
 			offsetTop: 0,
+			collapsed,
 		});
 	}
 
@@ -287,8 +291,9 @@ export function textCanvas(host: HTMLElement) {
 		row: number,
 		text: string,
 		tokens: readonly SourceTokenSpan[] = [],
+		collapsed = false,
 	) {
-		const line = measure(text, row);
+		const line = measure(text, row, collapsed);
 		line.tokens = tokens;
 		const offsetTop = y;
 		line.offsetTop = offsetTop;
@@ -381,6 +386,7 @@ export function textCanvas(host: HTMLElement) {
 
 	function commit(offset: number) {
 		let y = (offsetY = offset);
+		foldHost.replaceChildren();
 		measurementReady = false;
 		if (hasResized) resizeCanvas();
 		else ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -391,6 +397,19 @@ export function textCanvas(host: HTMLElement) {
 			const lines = getVisibleSubLines(row, -offset);
 			offset = 0;
 			if (lines) for (const line of lines) commitLine(row, line, y);
+			if (row.collapsed) {
+				const rect = foldMeasure.getBoundingClientRect();
+				const top = y + rect.y - measureElement.getBoundingClientRect().y;
+				if (top + rect.height > 0 && top < host.clientHeight) {
+					const indicator = create('span');
+					indicator.setAttribute('part', 'fold-placeholder');
+					indicator.setAttribute('role', 'img');
+					indicator.setAttribute('aria-label', `Collapsed code at line ${row.row + 1}`);
+					indicator.textContent = '…';
+					indicator.style.cssText = `position:absolute;left:${rect.x - host.getBoundingClientRect().x}px;top:${top}px;width:${rect.width}px;height:${rect.height}px`;
+					foldHost.append(indicator);
+				}
+			}
 			y += row.height;
 			if (y > maxHeight) break;
 		}
@@ -525,7 +544,11 @@ export function textCanvas(host: HTMLElement) {
 	colorElement.style.display = 'none';
 	host.append(colorElement);
 	const textN = new Text();
-	const measureElement = create('div', { id: 'measure' }, textN);
+	const foldMeasure = create('span', { id: 'fold-measure' }, '…');
+	foldMeasure.style.cssText = 'display:none;margin-left:0.5ch';
+	const measureElement = create('div', { id: 'measure' }, textN, foldMeasure);
+	const foldHost = create('div');
+	foldHost.style.cssText = 'position:absolute;inset:0;pointer-events:none;overflow:hidden';
 	const charRange = document.createRange();
 	const lineRange = document.createRange();
 	const lineCache = new Cache<number, SourceLine>();
@@ -551,6 +574,7 @@ export function textCanvas(host: HTMLElement) {
 		getSelectionRects,
 		invalidate,
 		measureElement,
+		foldHost,
 		resize,
 		setTokenColors,
 		updateStyles,

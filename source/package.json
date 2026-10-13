@@ -9,7 +9,7 @@
 		"@cxl/ui": "^6.0.0-beta"
 	},
 	"scripts": {
-		"build": "cxl-build",
+		"build": "node build.mjs",
 		"test": "npm run build -- test"
 	},
 	"bugs": "https://github.com/cxlio/source/issues",

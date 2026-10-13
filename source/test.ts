@@ -205,7 +205,34 @@ export default spec('@cxl/ui.source', a => {
 				(node as HTMLElement).style.width = '1200px';
 			},
 		);
-		it.afterAll(async () => { if (figureStarted) await figure; });
+		const collapsedFigure = it.figure('folding-demo-collapsed',
+			'<iframe title="Collapsed source folding demo" src="../../docs/demo/index.html" onload="setTimeout(() => this.contentDocument.querySelector(\'c-source\').fold.close(17), 40)" style="display:block;width:1200px;height:900px;border:0"></iframe>',
+			node => { (node as HTMLElement).style.width = '1200px'; },
+		);
+		it.afterAll(async () => { if (figureStarted) await Promise.all([figure, collapsedFigure]); });
+		it.testElement('indicates hidden code in the exact demo fold without editing it', async (a: TestApi) => {
+			const frame = a.element('iframe');
+			frame.style.cssText = 'display:block;width:1200px;height:900px;border:0';
+			const loaded = new Promise<void>(resolve => frame.addEventListener('load', () => resolve(), { once: true }));
+			frame.src = '../../docs/demo/index.html';
+			await loaded;
+			await a.sleep(100);
+			const source = frame.contentDocument?.querySelector('c-source') as Source | null;
+			a.assert(source);
+			const original = source.getText();
+			frame.scrollIntoView({ block: 'center' });
+			const line = original.split('\n').findIndex(value => value.includes('if (activeFile)'));
+			source.fold.close(line);
+			await a.sleep(40);
+			const indicator = source.shadowRoot?.querySelector('[part="fold-placeholder"]');
+			a.ok(indicator, 'collapsed demo block shows an inline indication');
+			a.assert(indicator, 'collapsed demo block shows an inline indication');
+			a.equal(indicator.textContent, '…');
+			a.equal(source.getText(), original);
+			source.fold.open(line);
+			await a.sleep(40);
+			a.equal(source.shadowRoot?.querySelector('[part="fold-placeholder"]'), null);
+		});
 		it.testElement('renders the complete sample on load when it fits the viewport', async (a: TestApi) => {
 			const frame = a.element('iframe');
 			frame.style.cssText = 'display:block;width:1200px;height:900px;border:0';
@@ -2060,6 +2087,75 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 	});
 
 	a.test('folding', it => {
+		it.testElement('indicates nested folds and preserves copy and history', async (a: TestApi) => {
+			const value = 'if (outer) {\n  if (inner) {\n    hidden\n  }\n}\nafter';
+			const source = await createFoldEditor(a, value);
+			source.scrollIntoView({ block: 'center' });
+			source.fold.close(1);
+			await a.sleep(40);
+			a.equal(source.fold.range(1)?.closed, true);
+			const indicator = source.shadowRoot?.querySelector('[part="fold-placeholder"]');
+			a.ok(indicator, 'nested collapsed block shows an inline indication');
+			a.assert(indicator);
+			a.equal(indicator.getAttribute('aria-label'), 'Collapsed code at line 2');
+			await a.a11y(source);
+			source.fold.close(0);
+			await a.sleep(40);
+			a.equal(source.shadowRoot?.querySelectorAll('[part="fold-placeholder"]').length, 1);
+			source.fold.open(0);
+			await a.sleep(40);
+			a.equal(source.shadowRoot?.querySelector('[part="fold-placeholder"]')?.getAttribute('aria-label'), 'Collapsed code at line 2');
+			source.selection.set(0, value.length);
+			a.equal(clipboardSelection(source), value);
+			source.history.undo();
+			a.equal(source.getText(), value, 'folding does not add history entries');
+			source.fold.openAll();
+			await a.sleep(40);
+			a.equal(source.shadowRoot?.querySelector('[part="fold-placeholder"]'), null);
+		});
+		it.testElement('wraps indicators and maps pointer hits to the document boundary', async (a: TestApi) => {
+			const header = 'if (activeFileWithALongName) {';
+			const value = `${header}\n  hidden\n}\n${'after\n'.repeat(30)}`;
+			const source = await createFoldEditor(a, value);
+			source.gutters = [];
+			source.style.width = `${header.length}ch`;
+			source.scrollIntoView({ block: 'center' });
+			source.fold.close(0);
+			await a.sleep(75);
+			const indicator = source.shadowRoot?.querySelector('[part="fold-placeholder"]');
+			a.ok(indicator, 'wrapped fold has an indication');
+			a.assert(indicator);
+			const bounds = indicator.getBoundingClientRect();
+			const canvas = source.shadowRoot?.querySelector('canvas[part="text"]');
+			a.assert(canvas);
+			const viewport = canvas.getBoundingClientRect();
+			a.ok(bounds.left >= viewport.left && bounds.right <= viewport.right, 'indicator fits the viewport');
+			a.ok(bounds.top > viewport.top, 'long header wraps');
+			source.dispatchEvent(new PointerEvent('pointerdown', {
+				bubbles: true, composed: true, button: 0, pointerId: 1,
+				clientX: bounds.left + bounds.width / 2, clientY: bounds.top + bounds.height / 2,
+			}));
+			source.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true, pointerId: 1 }));
+			a.equal(source.cursor.index, header.length);
+			source.cursor.next();
+			a.equal(source.cursorY.index, 3, 'navigation skips hidden lines');
+			source.scrollTop = source.scrollHeight;
+			await a.sleep(40);
+			a.equal(source.shadowRoot?.querySelector('[part="fold-placeholder"]'), null);
+			source.scrollTop = 0;
+			await a.sleep(40);
+			a.ok(source.shadowRoot?.querySelector('[part="fold-placeholder"]'), 'indicator returns when scrolled into view');
+			for (const color of ['rgb(17, 17, 17)', 'rgb(238, 238, 238)']) {
+				source.style.color = color;
+				const marker = source.shadowRoot?.querySelector('[part="fold-placeholder"]');
+				a.assert(marker);
+				a.equal(getComputedStyle(marker).borderTopColor, color, 'border follows theme text color');
+			}
+			source.setText('replacement');
+			await a.sleep(40);
+			a.equal(source.shadowRoot?.querySelector('[part="fold-placeholder"]'), null);
+			a.equal(source.getText(), 'replacement');
+		});
 		let figureStarted = false;
 		const figure = it.figure('fold-gutter',
 			'<div style="display:flex;gap:8px;width:976px;height:216px;background:#fff;color:#111">' +

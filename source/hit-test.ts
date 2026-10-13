@@ -14,14 +14,16 @@ export class HitTest {
 		const hit = this.#getLineAtPosition(y - this.textCanvas.offsetY);
 		if (!hit) return;
 		const { part, sourceLine, top } = hit;
-		if (!part)
+		if (!part) {
+			const caret = this.textCanvas.getCaret({ line: sourceLine.row, ch: sourceLine.text.length });
 			return {
-				position: { line: sourceLine.row, ch: 0 },
-				x: 0,
-				y: top,
+				position: { line: sourceLine.row, ch: sourceLine.text.length },
+				x: caret?.x ?? 0,
+				y: caret?.y ?? top,
 				height: sourceLine.height,
 				line: sourceLine.row,
 			};
+		}
 
 		const index = part.chars.findIndex(
 			char => x < char.x + char.width,
