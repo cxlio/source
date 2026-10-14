@@ -21,11 +21,19 @@ export interface SourceFoldFeature {
 	closeAll(): void;
 }
 
+export interface SourceFoldSpan {
+	start: number;
+	end: number;
+	folded?: boolean;
+}
+
 interface HiddenLines {
 	start: number;
 	end: number;
 	row: number;
 	removed: number;
+	from: number;
+	to: number;
 }
 
 function validCount(value: number, maximum: number) {
@@ -79,13 +87,55 @@ export class SourceFolding implements SourceFoldFeature {
 		return hidden && line <= hidden.end ? hidden.row : line - (hidden?.removed ?? 0);
 	}
 
-	isHidden(line: number) {
-		return this.lineAt(this.rowAt(line)) !== line;
+	hiddenAt(index: number) {
+		const hidden = this.#hidden[this.#hiddenIndex(index) - 1];
+		return hidden && index < hidden.to ? hidden : undefined;
 	}
 
-	reveal(line: number) {
-		if (!this.isHidden(line)) return;
-		this.#set(range => range.closed && line > range.line && line <= range.endLine, false);
+	spans(line: number): SourceFoldSpan[] | undefined {
+		if (!this.#hidden.length) return;
+		let start = this.buffer.indexAt({ line, ch: 0 });
+		let end = start + this.buffer.getLine(line).length;
+		let index = this.#hiddenIndex(start);
+		if ((this.#hidden[index]?.from ?? Infinity) > end) return;
+		const spans: SourceFoldSpan[] = [];
+		for (let hidden = this.#hidden[index]; hidden && hidden.from <= end; hidden = this.#hidden[++index]) {
+			if (hidden.from > start) spans.push({ start, end: hidden.from });
+			spans.push({ start: hidden.from, end: hidden.to, folded: true });
+			start = hidden.to;
+			end = this.buffer.indexAt({ line: this.buffer.positionAt(start).line, ch: Infinity });
+		}
+		if (start < end) spans.push({ start, end });
+		return spans;
+	}
+
+	indexAt(line: number, ch: number) {
+		const spans = this.spans(line);
+		if (!spans) return this.buffer.indexAt({ line, ch });
+		ch = Math.max(0, ch);
+		for (const span of spans) {
+			const length = span.folded ? 1 : span.end - span.start;
+			if (ch < length) return span.start + (span.folded ? 0 : ch);
+			ch -= length;
+		}
+		return spans.at(-1)?.end ?? 0;
+	}
+
+	columnAt(index: number) {
+		const position = this.buffer.positionAt(index);
+		const spans = this.spans(this.lineAt(this.rowAt(position.line)));
+		if (!spans) return position.ch;
+		let column = 0;
+		for (const span of spans) {
+			if (index <= span.end) return column + (span.folded ? Number(index === span.end) : index - span.start);
+			column += span.folded ? 1 : span.end - span.start;
+		}
+		return column;
+	}
+
+	reveal(index: number) {
+		if (!this.hiddenAt(index)) return;
+		this.#set(range => range.closed && index > range.start && index < range.end, false);
 	}
 
 	range(line: number): SourceFoldRange | undefined {
@@ -132,12 +182,15 @@ export class SourceFolding implements SourceFoldFeature {
 				const line = this.buffer.positionAt(start.start).line;
 				const endLine = this.buffer.positionAt(Math.max(token.start, token.end - 1)).line;
 				if (endLine <= line) continue;
-				const key = `${start.start}:${token.end}`;
+				const from = start === token ? start.start : start.end;
+				const to = start === token ? token.end : token.start;
+				if (to <= from) continue;
+				const key = `${from}:${to}`;
 				if (seen.has(key)) continue;
 				seen.add(key);
 				ranges.push({
-					start: start.start,
-					end: token.end,
+					start: from,
+					end: to,
 					line,
 					endLine,
 					closed: previous.get(key) ?? false,
@@ -174,6 +227,17 @@ export class SourceFolding implements SourceFoldFeature {
 		this.#refresh();
 	}
 
+	#hiddenIndex(index: number) {
+		let low = 0;
+		let high = this.#hidden.length;
+		while (low < high) {
+			const middle = (low + high) >> 1;
+			if ((this.#hidden[middle]?.from ?? Infinity) < index) low = middle + 1;
+			else high = middle;
+		}
+		return low;
+	}
+
 	#at(line: number) {
 		if (!Number.isSafeInteger(line)) return;
 		let low = 0;
@@ -204,17 +268,19 @@ export class SourceFolding implements SourceFoldFeature {
 		for (const range of this.#ranges) {
 			if (!range.closed) continue;
 			const previous = this.#hidden.at(-1);
-			if (previous && range.line + 1 <= previous.end) {
-				if (range.endLine > previous.end) {
-					removed += range.endLine - previous.end;
-					previous.end = range.endLine;
+			const endLine = this.buffer.positionAt(range.end).line;
+			if (previous && range.start < previous.to) {
+				previous.to = Math.max(previous.to, range.end);
+				if (endLine > previous.end) {
+					removed += endLine - previous.end;
+					previous.end = endLine;
 					previous.removed = removed;
 				}
 				continue;
 			}
 			const row = range.line - removed;
-			removed += range.endLine - range.line;
-			this.#hidden.push({ start: range.line + 1, end: range.endLine, row, removed });
+			removed += endLine - range.line;
+			this.#hidden.push({ start: range.line + 1, end: endLine, row, removed, from: range.start, to: range.end });
 		}
 		this.changed();
 		this.onChange.next();

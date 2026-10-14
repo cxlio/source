@@ -26,6 +26,30 @@ type SubLine = {
 	lineIndex: number;
 };
 
+export interface SourceTextSpan {
+	start: number;
+	end: number;
+	position: TextPosition;
+	endPosition?: TextPosition;
+}
+
+function getSpanEnd(span: SourceTextSpan): TextPosition {
+	return span.endPosition ?? { line: span.position.line, ch: span.position.ch + span.end - span.start };
+}
+
+function getLastLine(line: SourceLine) {
+	const last = line.spans?.at(-1);
+	return last?.endPosition?.line ?? last?.position.line ?? line.row;
+}
+
+function comparePosition(a: TextPosition, b: TextPosition) {
+	return a.line - b.line || a.ch - b.ch;
+}
+
+function clampPosition(position: TextPosition, start: TextPosition, end: TextPosition) {
+	return comparePosition(position, start) < 0 ? start : comparePosition(position, end) > 0 ? end : position;
+}
+
 export type SourceLine = {
 	lines: Cache<number, SubLine>;
 	tokens: readonly SourceTokenSpan[];
@@ -34,7 +58,7 @@ export type SourceLine = {
 	text: string;
 	row: number;
 	offsetTop: number;
-	collapsed: boolean;
+	spans?: readonly SourceTextSpan[];
 };
 
 export interface TextPosition {
@@ -53,6 +77,7 @@ export interface TextRect {
 export interface TextRangeRect extends TextRect {
 	start: number;
 	end: number;
+	endLine?: number;
 }
 
 export type TextCanvas = ReturnType<typeof textCanvas>;
@@ -232,7 +257,6 @@ export function textCanvas(host: HTMLElement) {
 		const { text, lines } = sourceLine;
 
 		textN.textContent = text || ' ';
-		foldMeasure.style.display = sourceLine.collapsed ? 'inline-block' : 'none';
 
 		const maxY = host.offsetHeight + offsetY;
 		const startLine: [number, number] | undefined = offsetY
@@ -262,18 +286,18 @@ export function textCanvas(host: HTMLElement) {
 
 			if (subline.y > maxY) break;
 			i = subline.endIndex + 1;
+			line++;
 		}
 
 		return result;
 	}
 
-	function measure(text: string, row: number, collapsed: boolean): SourceLine {
+	function measure(text: string, row: number): SourceLine {
 		const cache = lineCache.get(row);
-		if (cache?.collapsed === collapsed) return cache;
+		if (cache?.text === text) return cache;
 
 		const lines = new Cache<number, SubLine>();
 		textN.textContent = text || ' ';
-		foldMeasure.style.display = collapsed ? 'inline-block' : 'none';
 
 		return lineCache.set(row, {
 			lines,
@@ -283,7 +307,6 @@ export function textCanvas(host: HTMLElement) {
 			text,
 			row,
 			offsetTop: 0,
-			collapsed,
 		});
 	}
 
@@ -291,10 +314,11 @@ export function textCanvas(host: HTMLElement) {
 		row: number,
 		text: string,
 		tokens: readonly SourceTokenSpan[] = [],
-		collapsed = false,
+		spans?: readonly SourceTextSpan[],
 	) {
-		const line = measure(text, row, collapsed);
+		const line = measure(text, row);
 		line.tokens = tokens;
+		line.spans = spans;
 		const offsetTop = y;
 		line.offsetTop = offsetTop;
 		toRender.push(line);
@@ -397,18 +421,18 @@ export function textCanvas(host: HTMLElement) {
 			const lines = getVisibleSubLines(row, -offset);
 			offset = 0;
 			if (lines) for (const line of lines) commitLine(row, line, y);
-			if (row.collapsed) {
-				const rect = foldMeasure.getBoundingClientRect();
-				const top = y + rect.y - measureElement.getBoundingClientRect().y;
-				if (top + rect.height > 0 && top < host.clientHeight) {
-					const indicator = create('span');
-					indicator.setAttribute('part', 'fold-placeholder');
-					indicator.setAttribute('role', 'img');
-					indicator.setAttribute('aria-label', `Collapsed code at line ${row.row + 1}`);
-					indicator.textContent = '…';
-					indicator.style.cssText = `position:absolute;left:${rect.x - host.getBoundingClientRect().x}px;top:${top}px;width:${rect.width}px;height:${rect.height}px`;
-					foldHost.append(indicator);
-				}
+			for (const span of row.spans ?? []) {
+				if (!span.endPosition) continue;
+				const part = lines?.find(line => span.start >= line.startIndex && span.start <= line.endIndex);
+				const char = part?.chars[span.start - part.startIndex];
+				if (!char || y + char.y + char.height <= 0 || y + char.y >= host.clientHeight) continue;
+				const indicator = create('span');
+				indicator.setAttribute('part', 'fold-placeholder');
+				indicator.setAttribute('role', 'img');
+				indicator.setAttribute('aria-label', `Collapsed code at line ${span.position.line + 1}`);
+				indicator.textContent = '…';
+				indicator.style.cssText = `position:absolute;left:${char.x}px;top:${y + char.y}px;width:${char.width}px;height:${char.height}px`;
+				foldHost.append(indicator);
 			}
 			y += row.height;
 			if (y > maxHeight) break;
@@ -433,74 +457,69 @@ export function textCanvas(host: HTMLElement) {
 		]?.width ?? 1;
 	}
 
-	function getCaret({ line, ch }: TextPosition): TextRect | undefined {
-		const sourceLine = toRender.find(row => row.row === line);
-		if (!sourceLine) return;
-		const parts = [...sourceLine.lines];
-		const part =
-			parts.find(
-				item =>
-					ch >= item.startIndex && ch <= item.endIndex + 1,
-			) ?? parts.at(-1);
-		if (!part)
-			return {
-				x: 0,
-				y: sourceLine.offsetTop,
-				width: 1,
-				height: sourceLine.height,
-				line,
-			};
-		return {
-			x: getCharacterX(part, ch),
-			y: sourceLine.offsetTop + part.y,
-			width: getCharacterWidth(part, ch),
-			height: part.height,
-			line,
-		};
+	function getPosition(line: SourceLine, ch: number): TextPosition {
+		if (!line.spans) return { line: line.row, ch };
+		if (ch < line.text.length) for (const span of line.spans) {
+			if (ch >= span.start && ch < span.end)
+				return span.endPosition ? span.position : { line: span.position.line, ch: span.position.ch + ch - span.start };
+		}
+		const last = line.spans.at(-1);
+		return last ? getSpanEnd(last) : { line: line.row, ch: 0 };
 	}
 
-	function getSelectionRects(
-		start: TextPosition,
-		end: TextPosition,
-	): TextRangeRect[] {
-		const result: TextRangeRect[] = [];
-		for (const sourceLine of toRender) {
-			if (sourceLine.row < start.line || sourceLine.row > end.line)
-				continue;
-			const rangeStart =
-				sourceLine.row === start.line ? start.ch : 0;
-			const rangeEnd =
-				sourceLine.row === end.line ? end.ch : sourceLine.text.length;
-			if (rangeStart === rangeEnd && start.line === end.line) continue;
+	function projectedIndex(line: SourceLine, position: TextPosition) {
+		if (!line.spans) return line.row === position.line ? position.ch : undefined;
+		for (const span of line.spans) {
+			const end = getSpanEnd(span);
+			if (comparePosition(position, span.position) >= 0 && comparePosition(position, end) <= 0)
+				return span.endPosition ? (comparePosition(position, end) === 0 ? span.end : span.start) : span.start + position.ch - span.position.ch;
+		}
+	}
 
+	function getCaret(position: TextPosition): TextRect | undefined {
+		for (const sourceLine of toRender) {
+			const ch = projectedIndex(sourceLine, position);
+			if (ch === undefined) continue;
 			const parts = [...sourceLine.lines];
-			if (!parts.length) {
-				result.push({
-					x: 0,
-					y: sourceLine.offsetTop,
-					width: 2,
-					height: sourceLine.height,
-					line: sourceLine.row,
-					start: rangeStart,
-					end: rangeEnd,
-				});
+			const part = parts.find(item => ch >= item.startIndex && ch <= item.endIndex + 1) ?? parts.at(-1);
+			return {
+				x: part ? getCharacterX(part, ch) : 0,
+				y: sourceLine.offsetTop + (part?.y ?? 0),
+				width: part ? getCharacterWidth(part, ch) : 1,
+				height: part?.height ?? sourceLine.height,
+				line: position.line,
+			};
+		}
+	}
+
+	function getSelectionRects(start: TextPosition, end: TextPosition): TextRangeRect[] {
+		const result: TextRangeRect[] = [];
+		if (comparePosition(start, end) === 0) return result;
+		for (const sourceLine of toRender) {
+			if (sourceLine.row > end.line || getLastLine(sourceLine) < start.line) continue;
+			if (!sourceLine.text.length && sourceLine.row >= start.line && sourceLine.row <= end.line) {
+				result.push({ x: 0, y: sourceLine.offsetTop, width: 2, height: sourceLine.height, line: sourceLine.row, start: 0, end: 0 });
 				continue;
 			}
-
-			for (const part of parts) {
-				const partStart = Math.max(rangeStart, part.startIndex);
-				const partEnd = Math.min(rangeEnd, part.endIndex + 1);
-				if (partEnd <= partStart) continue;
-				const x = getCharacterX(part, partStart);
-				result.push({
-					x,
-					y: sourceLine.offsetTop + part.y,
-					width: Math.max(2, getCharacterX(part, partEnd) - x),
-					height: part.height,
-					line: sourceLine.row,
-					start: partStart,
-					end: partEnd,
-				});
+			const spans: readonly SourceTextSpan[] = sourceLine.spans ?? [{ start: 0, end: sourceLine.text.length, position: { line: sourceLine.row, ch: 0 } }];
+			for (const span of spans) {
+				const spanEnd = getSpanEnd(span);
+				if (comparePosition(end, span.position) <= 0 || comparePosition(start, spanEnd) >= 0) continue;
+				const rangeStart = span.endPosition ? span.start : span.start + (start.line === span.position.line ? Math.max(0, start.ch - span.position.ch) : 0);
+				const rangeEnd = span.endPosition ? span.end : span.start + (end.line === span.position.line ? Math.min(span.end - span.start, end.ch - span.position.ch) : span.end - span.start);
+				for (const part of sourceLine.lines) {
+					const partStart = Math.max(rangeStart, part.startIndex);
+					const partEnd = Math.min(rangeEnd, part.endIndex + 1);
+					if (partEnd <= partStart) continue;
+					const x = getCharacterX(part, partStart);
+					const from = clampPosition(getPosition(sourceLine, partStart), start, end);
+					const to = clampPosition(getPosition(sourceLine, partEnd), start, end);
+					result.push({
+						x, y: sourceLine.offsetTop + part.y,
+						width: Math.max(2, getCharacterX(part, partEnd) - x), height: part.height,
+						line: from.line, start: from.ch, end: to.ch, ...(from.line !== to.line ? { endLine: to.line } : {}),
+					});
+				}
 			}
 		}
 		return result;
@@ -544,9 +563,7 @@ export function textCanvas(host: HTMLElement) {
 	colorElement.style.display = 'none';
 	host.append(colorElement);
 	const textN = new Text();
-	const foldMeasure = create('span', { id: 'fold-measure' }, '…');
-	foldMeasure.style.cssText = 'display:none;margin-left:0.5ch';
-	const measureElement = create('div', { id: 'measure' }, textN, foldMeasure);
+	const measureElement = create('div', { id: 'measure' }, textN);
 	const foldHost = create('div');
 	foldHost.style.cssText = 'position:absolute;inset:0;pointer-events:none;overflow:hidden';
 	const charRange = document.createRange();
@@ -571,6 +588,7 @@ export function textCanvas(host: HTMLElement) {
 		canvas: ctx.canvas,
 		commit,
 		getCaret,
+		getPosition,
 		getSelectionRects,
 		invalidate,
 		measureElement,

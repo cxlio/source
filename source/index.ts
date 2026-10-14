@@ -16,15 +16,15 @@ import {
 	ReplaySubject,
 	Subject,
 } from '@cxl/ui';
-import { textCanvas } from './text.js';
+import { textCanvas, type SourceTextSpan } from './text.js';
 import { sourceCursor } from './cursor.js';
 import { HitTest } from './hit-test.js';
 import { type BufferChange, type BufferPosition } from './buffer.js';
 import { createTextInput, type TextInputUpdate } from './input.js';
 import { Code } from './code.js';
 import { type SourceGutter } from './gutter.js';
-import { SourceFolding, type SourceFoldFeature } from './fold.js';
-import type { SourceToken } from './highlight.js';
+import { SourceFolding, type SourceFoldFeature, type SourceFoldSpan } from './fold.js';
+import type { SourceToken, SourceTokenSpan } from './highlight.js';
 export { type SourceFoldFeature, type SourceFoldRange } from './fold.js';
 import {
 	sourceDecorations,
@@ -473,7 +473,7 @@ export class Source extends Code {
 					ch: fragment.start,
 				}),
 				end: this.buffer.indexAt({
-					line: fragment.line,
+					line: fragment.endLine ?? fragment.line,
 					ch: fragment.end,
 				}),
 			}));
@@ -486,10 +486,7 @@ export class Source extends Code {
 					? this.buffer.indexAt({ line: first.row, ch: 0 })
 					: 0,
 				end: last
-					? this.buffer.indexAt({
-							line: last.row,
-							ch: last.text.length,
-						})
+					? this.buffer.indexAt(this.text.getPosition(last, last.text.length))
 					: 0,
 			};
 		},
@@ -586,14 +583,7 @@ canvas {
 	white-space: pre-wrap;
 	word-break: break-word;
 }
-#fold-measure, [part="fold-placeholder"] {
-	box-sizing: border-box;
-	border: 1px solid currentColor;
-	border-radius: 0.25em;
-	text-align: center;
-	width: 2ch;
-	line-height: inherit;
-}
+[part="fold-placeholder"] { opacity: 0; }
 #input {
 	position: fixed;
 	width: 1px;
@@ -652,7 +642,8 @@ canvas {
 					function renderSelection() {
 						const selections = $.selectionState;
 						const firstLine = text.firstVisibleLine;
-						const lastLine = text.toRender.at(-1)?.row ?? firstLine;
+						const last = text.toRender.at(-1);
+						const lastLine = last ? text.getPosition(last, last.text.length).line : firstLine;
 						const visible = selections.flatMap(selection => {
 							const { start, end } = selectionRange(selection);
 							const startPosition = buffer.positionAt(start);
@@ -1006,7 +997,8 @@ canvas {
 
 	protected goColumn(ch: number) {
 		const { line } = this.buffer.positionAt(this.selectionHead);
-		this.selection.set(this.buffer.indexAt({ line, ch }));
+		const row = this.folding.lineAt(this.folding.rowAt(line));
+		this.selection.set(this.folding.indexAt(row, ch));
 	}
 
 	protected moveHorizontal(direction: -1 | 1, count = 1) {
@@ -1015,12 +1007,8 @@ canvas {
 			let next = index + direction;
 			if (direction === 1 && this.buffer.charAt(index) === '\r' && this.buffer.charAt(index + 1) === '\n') next++;
 			else if (direction === -1 && this.buffer.charAt(index - 2) === '\r' && this.buffer.charAt(index - 1) === '\n') next--;
-			const line = this.buffer.positionAt(this.clampSelection(next)).line;
-			if (this.folding.isHidden(line)) {
-				const row = this.folding.rowAt(line) + (direction === 1 ? 1 : 0);
-				if (row >= this.folding.visibleCount) break;
-				next = this.buffer.indexAt({ line: this.folding.lineAt(row), ch: direction === 1 ? 0 : Infinity });
-			}
+			const hidden = this.folding.hiddenAt(this.clampSelection(next));
+			if (hidden) next = direction === 1 ? hidden.to : hidden.from;
 			index = this.clampSelection(next);
 		}
 		this.selection.set(index);
@@ -1044,10 +1032,7 @@ canvas {
 			if (hit) next = this.buffer.indexAt(hit.position);
 		}
 		if (next === undefined || next === this.selectionHead)
-			next = this.buffer.indexAt({
-				line: this.folding.lineAt(this.folding.rowAt(position.line) + direction),
-				ch: position.ch,
-			});
+			next = this.folding.indexAt(this.folding.lineAt(this.folding.rowAt(position.line) + direction), this.folding.columnAt(this.selectionHead));
 		this.setSelectionState(next, next, true, true);
 	}
 
@@ -1055,10 +1040,7 @@ canvas {
 		const position = this.buffer.positionAt(this.selectionHead);
 		const lineHeight = this.text.measureElement.offsetHeight || 16;
 		const lines = Math.max(1, Math.floor(this.clientHeight / lineHeight));
-		const next = this.buffer.indexAt({
-			line: this.folding.lineAt(this.folding.rowAt(position.line) + direction * lines),
-			ch: position.ch,
-		});
+		const next = this.folding.indexAt(this.folding.lineAt(this.folding.rowAt(position.line) + direction * lines), this.folding.columnAt(this.selectionHead));
 		this.setSelectionState(next, next, true, true);
 	}
 
@@ -1095,12 +1077,12 @@ canvas {
 		if (direction) {
 			while (index >= 0 && index < tokens.length) {
 				const token = tokens[index];
-				if (token && !this.folding.isHidden(this.buffer.positionAt(token.start).line)) break;
+				if (token && !this.folding.hiddenAt(token.start)) break;
 				index += direction;
 			}
 			if (index < 0 || index >= tokens.length) {
 				const boundary = index < 0 ? 0 : this.buffer.length;
-				if (!this.folding.isHidden(this.buffer.positionAt(boundary).line)) this.selection.set(boundary);
+				if (!this.folding.hiddenAt(boundary)) this.selection.set(boundary);
 				return;
 			}
 		}
@@ -1389,18 +1371,20 @@ canvas {
 		head = this.clampSelection(head);
 		const anchorPosition = this.buffer.positionAt(anchor);
 		const headPosition = this.buffer.positionAt(head);
-		this.folding.reveal(anchorPosition.line);
-		this.folding.reveal(headPosition.line);
+		this.folding.reveal(anchor);
+		this.folding.reveal(head);
 		const folded = this.folding.hasHiddenLines;
 		const from = folded ? this.folding.rowAt(anchorPosition.line) : anchorPosition.line;
 		const to = folded ? this.folding.rowAt(headPosition.line) : headPosition.line;
 		const direction = from <= to ? 1 : -1;
 		const selections: SourceSelection[] = [];
+		const anchorColumn = folded ? this.folding.columnAt(anchor) : anchorPosition.ch;
+		const headColumn = folded ? this.folding.columnAt(head) : headPosition.ch;
 		for (let row = from; ; row += direction) {
 			const line = folded ? this.folding.lineAt(row) : row;
 			selections.push({
-				anchor: this.buffer.indexAt({ line, ch: anchorPosition.ch }),
-				head: this.buffer.indexAt({ line, ch: headPosition.ch }),
+				anchor: this.folding.indexAt(line, anchorColumn),
+				head: this.folding.indexAt(line, headColumn),
 			});
 			if (row === to) break;
 		}
@@ -1433,8 +1417,8 @@ canvas {
 			}),
 		);
 		if (this.folding.hasHiddenLines) for (const selection of next) {
-			this.folding.reveal(this.buffer.positionAt(selection.anchor).line);
-			this.folding.reveal(this.buffer.positionAt(selection.head).line);
+			this.folding.reveal(selection.anchor);
+			this.folding.reveal(selection.head);
 		}
 		const changed = !this.selectionsEqual(this.selectionState, next);
 		this.selectionState = next;
@@ -1510,12 +1494,8 @@ canvas {
 				render: (index, order) => {
 					const line = this.folding.lineAt(index);
 					if (order === 0) text.begin(line);
-					return text.renderLine(
-						line,
-						this.buffer.getLine(line),
-						this.highlight.getLine(line),
-						this.folding.range(line)?.closed,
-					);
+					const spans = this.folding.spans(line);
+					return spans ? this.renderFoldedLine(line, spans) : text.renderLine(line, this.buffer.getLine(line), this.highlight.getLine(line));
 				},
 				dataLength: this.folding.visibleCount,
 				translate: false,
@@ -1586,12 +1566,27 @@ canvas {
 		this.setSelectionsState(this.selectionSnapshot(), false);
 	}
 
+	private renderFoldedLine(line: number, spans: readonly SourceFoldSpan[]) {
+		let value = '';
+		const tokens: SourceTokenSpan[] = [];
+		const projected: SourceTextSpan[] = [];
+		for (const span of spans) {
+			const position = this.buffer.positionAt(span.start);
+			const start = value.length;
+			value += span.folded ? '…' : this.buffer.getText(span.start, span.end);
+			projected.push({ start, end: value.length, position, endPosition: span.folded ? this.buffer.positionAt(span.end) : undefined });
+			if (span.folded) continue;
+			for (const token of this.highlight.getLine(position.line)) {
+				const from = Math.max(token.start, position.ch);
+				const to = Math.min(token.end, position.ch + value.length - start);
+				if (from < to) tokens.push({ start: start + from - position.ch, end: start + to - position.ch, kind: token.kind });
+			}
+		}
+		return this.text.renderLine(line, value, tokens, projected);
+	}
+
 	private foldBoundary(index: number) {
-		if (!this.folding.hasHiddenLines) return index;
-		const line = this.buffer.positionAt(index).line;
-		return this.folding.isHidden(line)
-			? this.buffer.indexAt({ line: this.folding.lineAt(this.folding.rowAt(line)), ch: Infinity })
-			: index;
+		return this.folding.hiddenAt(index)?.from ?? index;
 	}
 
 	private clampSelection(index: number) {

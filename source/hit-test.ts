@@ -15,9 +15,10 @@ export class HitTest {
 		if (!hit) return;
 		const { part, sourceLine, top } = hit;
 		if (!part) {
-			const caret = this.textCanvas.getCaret({ line: sourceLine.row, ch: sourceLine.text.length });
+			const position = this.textCanvas.getPosition(sourceLine, sourceLine.text.length);
+			const caret = this.textCanvas.getCaret(position);
 			return {
-				position: { line: sourceLine.row, ch: sourceLine.text.length },
+				position,
 				x: caret?.x ?? 0,
 				y: caret?.y ?? top,
 				height: sourceLine.height,
@@ -32,7 +33,7 @@ export class HitTest {
 		const char = part.chars[charIndex];
 		if (!char)
 			return {
-				position: { line: sourceLine.row, ch: part.startIndex },
+				position: this.textCanvas.getPosition(sourceLine, part.startIndex),
 				x: 0,
 				y: top + part.y,
 				height: part.height,
@@ -40,10 +41,7 @@ export class HitTest {
 			};
 		const isBefore = x < char.x + char.width / 2;
 		return {
-			position: {
-				line: sourceLine.row,
-				ch: part.startIndex + charIndex + (isBefore ? 0 : 1),
-			},
+			position: this.textCanvas.getPosition(sourceLine, part.startIndex + charIndex + (isBefore ? 0 : 1)),
 			x: isBefore ? char.x : char.x + char.width,
 			y: top + part.y,
 			height: char.height,

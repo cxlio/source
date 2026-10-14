@@ -209,7 +209,11 @@ export default spec('@cxl/ui.source', a => {
 			'<iframe title="Collapsed source folding demo" src="../../docs/demo/index.html" onload="setTimeout(() => this.contentDocument.querySelector(\'c-source\').fold.close(17), 40)" style="display:block;width:1200px;height:900px;border:0"></iframe>',
 			node => { (node as HTMLElement).style.width = '1200px'; },
 		);
-		it.afterAll(async () => { if (figureStarted) await Promise.all([figure, collapsedFigure]); });
+		const callbackFigure = it.figure('folding-demo-callback',
+			'<iframe title="Collapsed callback in source demo" src="../../docs/demo/index.html" onload="setTimeout(() => this.contentDocument.querySelector(\'c-source\').fold.close(15), 40)" style="display:block;width:1200px;height:900px;border:0"></iframe>',
+			node => { (node as HTMLElement).style.width = '1200px'; },
+		);
+		it.afterAll(async () => { if (figureStarted) await Promise.all([figure, collapsedFigure, callbackFigure]); });
 		it.testElement('indicates hidden code in the exact demo fold without editing it', async (a: TestApi) => {
 			const frame = a.element('iframe');
 			frame.style.cssText = 'display:block;width:1200px;height:900px;border:0';
@@ -221,17 +225,43 @@ export default spec('@cxl/ui.source', a => {
 			a.assert(source);
 			const original = source.getText();
 			frame.scrollIntoView({ block: 'center' });
-			const line = original.split('\n').findIndex(value => value.includes('if (activeFile)'));
-			source.fold.close(line);
-			await a.sleep(40);
-			const indicator = source.shadowRoot?.querySelector('[part="fold-placeholder"]');
-			a.ok(indicator, 'collapsed demo block shows an inline indication');
-			a.assert(indicator, 'collapsed demo block shows an inline indication');
-			a.equal(indicator.textContent, '…');
-			a.equal(source.getText(), original);
-			source.fold.open(line);
-			await a.sleep(40);
-			a.equal(source.shadowRoot?.querySelector('[part="fold-placeholder"]'), null);
+			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="text"]');
+			const context = canvas?.getContext('2d');
+			a.assert(context);
+			const painted: { text: string; y: number }[] = [];
+			const fillText = context.fillText;
+			const clearRect = context.clearRect;
+			context.clearRect = function (x, y, width, height) { painted.length = 0; clearRect.call(this, x, y, width, height); };
+			context.fillText = function (text, x, y, maxWidth) {
+				painted.push({ text, y });
+				fillText.call(this, text, x, y, maxWidth);
+			};
+			try {
+				for (const header of ['if (activeFile)', 'source.changes.subscribe(() => {']) {
+					const line = original.split('\n').findIndex(value => value.includes(header));
+					const range = source.fold.range(line);
+					a.assert(range);
+					const from = original.lastIndexOf('\n', range.start - 1) + 1;
+					const newline = original.indexOf('\n', range.end);
+					const expected = original.slice(from, range.start) + '…' + original.slice(range.end, newline < 0 ? original.length : newline);
+					painted.length = 0;
+					source.fold.close(line);
+					await a.sleep(40);
+					const indicator = source.shadowRoot?.querySelector('[part="fold-placeholder"]');
+					a.assert(indicator, 'collapsed demo block shows an inline indication');
+					a.equal(indicator.textContent, '…');
+					const bounds = indicator.getBoundingClientRect();
+					const top = canvas?.getBoundingClientRect().top ?? 0;
+					a.equal(painted.filter(call => call.y > bounds.top - top && call.y <= bounds.bottom - top).map(call => call.text).join(''), expected, 'demo paints exactly the selected range as an ellipsis');
+					a.equal(source.getText(), original);
+					source.fold.open(line);
+					await a.sleep(40);
+					a.equal(source.shadowRoot?.querySelector('[part="fold-placeholder"]'), null);
+				}
+			} finally {
+				context.fillText = fillText;
+				context.clearRect = clearRect;
+			}
 		});
 		it.testElement('renders the complete sample on load when it fits the viewport', async (a: TestApi) => {
 			const frame = a.element('iframe');
@@ -2087,6 +2117,199 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 	});
 
 	a.test('folding', it => {
+		it.testElement('replaces only the exact fold range and preserves highlighted suffixes', async (a: TestApi) => {
+			const value = 'invoke(\n  () => { hidden(); }\n).next(42);';
+			const { source } = await createSourceEditor(a, value);
+			source.mode = 'javascript';
+			source.tokenColors = { number: '#123456', punctuation: '#654321', identifier: '#abcdef' };
+			await a.sleep(80);
+			const range = source.fold.range(0);
+			a.assert(range);
+			a.equal(range.start, value.indexOf('(') + 1);
+			a.equal(range.end, value.indexOf(').next'));
+			const context = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="text"]')?.getContext('2d');
+			a.assert(context);
+			const painted: { text: string; color: string | CanvasGradient | CanvasPattern }[] = [];
+			const fillText = context.fillText;
+			const clearRect = context.clearRect;
+			context.clearRect = function (x, y, width, height) { painted.length = 0; clearRect.call(this, x, y, width, height); };
+			context.fillText = function (text, x, y, maxWidth) {
+				painted.push({ text, color: this.fillStyle });
+				fillText.call(this, text, x, y, maxWidth);
+			};
+			try {
+				source.fold.close(0);
+				await a.sleep(40);
+				a.equal(painted.map(call => call.text).join(''), 'invoke(…).next(42);', 'canvas preserves the matched tokens and highlighted suffix');
+				a.ok(painted.some(call => call.text === '(' && call.color === '#654321'), 'opening token keeps punctuation highlighting');
+				a.ok(painted.some(call => call.text === ')' && call.color === '#654321'), 'closing token keeps punctuation highlighting');
+				a.ok(painted.some(call => call.text === '42' && call.color === '#123456'), 'suffix keeps number highlighting');
+				a.ok(painted.some(call => call.text === 'next' && call.color === '#abcdef'), 'suffix keeps identifier highlighting');
+				a.equal(source.getText(), value);
+			} finally {
+				context.fillText = fillText;
+				context.clearRect = clearRect;
+			}
+		});
+		it.testElement('paints folded syntax on the text canvas without a visible overlay', async (a: TestApi) => {
+			const value = 'if (activeFile) {\n  hidden\n}';
+			const source = await createFoldEditor(a, value);
+			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="text"]');
+			const context = canvas?.getContext('2d');
+			a.assert(context);
+			const painted: string[] = [];
+			const fillText = context.fillText;
+			context.fillText = function (text, x, y, maxWidth) {
+				painted.push(text);
+				fillText.call(this, text, x, y, maxWidth);
+			};
+			try {
+				source.fold.close(0);
+				await a.sleep(40);
+				a.ok(painted.some(text => text.includes('…')), 'canvas paints only the ellipsis for the fold');
+				const marker = source.shadowRoot?.querySelector('[part="fold-placeholder"]');
+				a.assert(marker);
+				a.equal(getComputedStyle(marker).opacity, '0', 'HTML marker provides only accessibility semantics');
+				a.equal(source.getText(), value);
+				painted.length = 0;
+				source.fold.open(0);
+				await a.sleep(40);
+				a.ok(!painted.some(text => text.includes('…')), 'expansion restores ordinary canvas text');
+			} finally {
+				context.fillText = fillText;
+			}
+		});
+		it.testElement('replaces selected ranges independently of other folds', async (a: TestApi) => {
+			for (const [value, expected] of [
+				['invoke([{\n  hidden\n}]);', '…'],
+				['invoke(() => {\n  if (ready) {\n    hidden\n  }});', '…'],
+				['invoke(\n  () => {\n    hidden\n  });', '…'],
+			] as const) {
+				const { source } = await createSourceEditor(a, value);
+				source.mode = 'javascript';
+				await a.sleep(80);
+				source.fold.close(0);
+				await a.sleep(40);
+				a.equal(source.shadowRoot?.querySelector('[part="fold-placeholder"]')?.textContent, expected);
+				a.equal(source.getText(), value);
+			}
+		});
+		it.testElement('paints wrapped folded content once per frame', async (a: TestApi) => {
+			const { source } = await createSourceEditor(a, 'invoke(\n  hidden\n).next(42);');
+			source.mode = 'javascript';
+			source.style.width = '80px';
+			await a.sleep(80);
+			const context = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="text"]')?.getContext('2d');
+			a.assert(context);
+			const frames: string[][] = [];
+			let painted: string[] = [];
+			const fillText = context.fillText;
+			const clearRect = context.clearRect;
+			context.clearRect = function (x, y, width, height) { painted = []; frames.push(painted); clearRect.call(this, x, y, width, height); };
+			context.fillText = function (text, x, y, maxWidth) { painted.push(text); fillText.call(this, text, x, y, maxWidth); };
+			try {
+				source.fold.close(0);
+				await a.sleep(40);
+				a.ok(frames.length > 0);
+				for (const frame of frames) a.equal(frame.join(''), 'invoke(…).next(42);', 'each frame paints every visible character once');
+			} finally {
+				context.fillText = fillText;
+				context.clearRect = clearRect;
+			}
+		});
+		it.testElement('uses declared multi-character token boundaries including newlines', async (a: TestApi) => {
+			for (const newline of [false, true]) {
+				const value = `prefix BEGIN\n  hidden\nEND IF${newline ? '\n' : ' '}tail`;
+				const { source } = await createSourceEditor(a, value);
+				source.gutters = [lineNumbers()];
+				source.highlighter = function* (source) {
+					yield { source, start: source.indexOf('BEGIN'), end: source.indexOf('BEGIN') + 5, line: 0, kind: 'keyword', foldStart: 1 };
+					yield { source, start: source.indexOf('END IF'), end: source.indexOf('END IF') + 6 + Number(newline), line: 2, kind: 'keyword', foldEnd: 1 };
+				};
+				await a.sleep(40);
+				const range = source.fold.range(0);
+				a.assert(range);
+				source.fold.close(0);
+				await a.sleep(40);
+				a.equal(source.shadowRoot?.querySelector('[part="fold-placeholder"]')?.textContent, '…');
+				a.equalValues(visibleLineNumbers(source), newline ? [0, 3] : [0]);
+				source.cursor.go(value.indexOf('tail'));
+				a.equal(source.fold.range(0)?.closed, true);
+				source.cursor.go(range.end);
+				source.cursor.previous();
+				a.equal(source.cursor.index, range.start, 'navigation crosses only the declared range');
+				a.equal(source.getText(), value);
+			}
+		});
+		it.testElement('keeps suffix interactions and decorations in document coordinates', async (a: TestApi) => {
+			const value = 'invoke(\n  hidden\n).next(42);';
+			const { source } = await createSourceEditor(a, value);
+			source.mode = 'javascript';
+			await a.sleep(80);
+			source.fold.close(0);
+			await a.sleep(40);
+			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="text"]');
+			const context = canvas?.getContext('2d');
+			const marker = source.shadowRoot?.querySelector('[part="fold-placeholder"]');
+			a.assert(canvas && context && marker);
+			const bounds = marker.getBoundingClientRect();
+			const number = value.indexOf('42');
+			const x = canvas.getBoundingClientRect().left + context.measureText('invoke(…).next(').width + context.measureText('4').width / 4;
+			source.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true, button: 0, pointerId: 1, clientX: x, clientY: bounds.top + bounds.height / 2 }));
+			source.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true, pointerId: 1 }));
+			a.equal(source.cursor.index, number, 'suffix pointer hit maps to its original offset');
+			a.equal(source.fold.range(0)?.closed, true, 'visible suffix does not expand the fold');
+			let fragments: readonly SourceDecorationFragment[] = [];
+			const decorations = source.decorations.create({ layer: 'above-text', paint: context => { fragments = context.fragments; } });
+			decorations.add({ range: { start: number, end: number + 2 }, value: 0 });
+			a.equal(fragments[0]?.start, number);
+			a.equal(fragments[0]?.end, number + 2);
+			a.equal(fragments[0]?.line, 2);
+			source.selection.set(0, value.length);
+			a.equal(clipboardSelection(source), value);
+			a.equal(source.fold.range(0)?.closed, true);
+			source.edit.replace('99', { start: number, end: number + 2 });
+			await a.sleep(40);
+			a.equal(source.getText(), value.replace('42', '99'));
+			a.equal(source.fold.range(0)?.closed, true);
+			source.history.undo();
+			await a.sleep(40);
+			a.equal(source.getText(), value);
+			source.history.redo();
+			await a.sleep(40);
+			a.equal(source.getText(), value.replace('42', '99'));
+			decorations.dispose();
+		});
+		it.testElement('projects consecutive folded ranges and preserves their intervening text', async (a: TestApi) => {
+			const value = 'one(\n  first\n) + two(\n  second\n).next(42);';
+			const { source } = await createSourceEditor(a, value);
+			source.mode = 'javascript';
+			await a.sleep(80);
+			const context = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="text"]')?.getContext('2d');
+			a.assert(context);
+			const painted: string[] = [];
+			const fillText = context.fillText;
+			const clearRect = context.clearRect;
+			context.clearRect = function (x, y, width, height) { painted.length = 0; clearRect.call(this, x, y, width, height); };
+			context.fillText = function (text, x, y, maxWidth) { painted.push(text); fillText.call(this, text, x, y, maxWidth); };
+			try {
+				source.fold.close(0);
+				source.fold.close(2);
+				await a.sleep(40);
+				a.equal(painted.join(''), 'one(…) + two(…).next(42);');
+				a.equal(source.shadowRoot?.querySelectorAll('[part="fold-placeholder"]').length, 2);
+				a.equal(source.getText(), value);
+				source.fold.open(0);
+				await a.sleep(40);
+				a.equal(source.fold.range(2)?.closed, true);
+				source.fold.openAll();
+				await a.sleep(40);
+				a.equal(source.shadowRoot?.querySelector('[part="fold-placeholder"]'), null);
+			} finally {
+				context.fillText = fillText;
+				context.clearRect = clearRect;
+			}
+		});
 		it.testElement('indicates nested folds and preserves copy and history', async (a: TestApi) => {
 			const value = 'if (outer) {\n  if (inner) {\n    hidden\n  }\n}\nafter';
 			const source = await createFoldEditor(a, value);
@@ -2118,7 +2341,7 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 			const value = `${header}\n  hidden\n}\n${'after\n'.repeat(30)}`;
 			const source = await createFoldEditor(a, value);
 			source.gutters = [];
-			source.style.width = `${header.length}ch`;
+			source.style.width = '16ch';
 			source.scrollIntoView({ block: 'center' });
 			source.fold.close(0);
 			await a.sleep(75);
@@ -2136,7 +2359,9 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 				clientX: bounds.left + bounds.width / 2, clientY: bounds.top + bounds.height / 2,
 			}));
 			source.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true, pointerId: 1 }));
-			a.equal(source.cursor.index, header.length);
+			a.equal(source.cursor.index, source.fold.range(0)?.end);
+			source.cursor.next();
+			a.equal(source.cursor.index, value.indexOf('}') + 1, 'closing token remains navigable');
 			source.cursor.next();
 			a.equal(source.cursorY.index, 3, 'navigation skips hidden lines');
 			source.scrollTop = source.scrollHeight;
@@ -2149,7 +2374,7 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 				source.style.color = color;
 				const marker = source.shadowRoot?.querySelector('[part="fold-placeholder"]');
 				a.assert(marker);
-				a.equal(getComputedStyle(marker).borderTopColor, color, 'border follows theme text color');
+				a.equal(getComputedStyle(marker).borderTopColor, color, 'accessibility marker inherits theme text color');
 			}
 			source.setText('replacement');
 			await a.sleep(40);
@@ -2183,6 +2408,39 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 				}
 			});
 		it.afterAll(async () => { if (figureStarted) await figure; });
+		let canvasFigureStarted = false;
+		const canvasFigure = it.figure('fold-canvas',
+			'<div style="display:flex;gap:8px;width:976px;height:240px;background:#fff;color:#111">' +
+			['light', 'dark', 'wrapped', 'multiple'].map(state =>
+				`<div>${state}<c-source-fold-canvas-${state} style="display:block;width:238px;height:216px;font:16px/24px monospace;background:${state === 'dark' ? '#111' : '#fff'};color:${state === 'dark' ? '#eee' : '#111'}"></c-source-fold-canvas-${state}></div>`,
+			).join('') + '</div>',
+			node => {
+				canvasFigureStarted = true;
+				(node as HTMLElement).style.width = '976px';
+				for (const state of ['light', 'dark', 'wrapped', 'multiple']) {
+					const name = `c-source-fold-canvas-${state}`;
+					if (customElements.get(name)) continue;
+					customElements.define(name, class extends Source {
+						constructor() {
+							super();
+							this.tokenColors = { identifier: state === 'dark' ? '#eeeeee' : '#111111', punctuation: state === 'dark' ? '#ffccbc' : '#1976d2', number: '#e64a19' };
+							if (state === 'multiple') {
+								this.mode = 'javascript';
+								this.setText('one(\n  first\n) + two(\n  second\n).next(42);');
+							} else {
+								this.highlighter = function* (source) {
+									yield { source, start: source.indexOf('BEGIN'), end: source.indexOf('BEGIN') + 5, line: 0, kind: 'keyword', foldStart: 1 };
+									yield { source, start: source.indexOf('END IF'), end: source.indexOf('END IF') + 6, line: 2, kind: 'keyword', foldEnd: 1 };
+									yield { source, start: source.indexOf('END IF') + 6, end: source.length, line: 2, kind: 'identifier' };
+								};
+								this.setText(`${state === 'wrapped' ? 'before a long header BEGIN' : 'before BEGIN'}\n  hidden\nEND IF ${state === 'wrapped' ? 'after with a long suffix' : 'after'}`);
+							}
+							this.fold.onChange.filter(() => this.fold.range(0) !== undefined).take(1).subscribe(() => this.fold.closeAll());
+						}
+					});
+				}
+			});
+		it.afterAll(async () => { if (canvasFigureStarted) await canvasFigure; });
 
 		it.testElement('paints highlight kinds and preserves syntax kinds', async (a: TestApi) => {
 			const code = await createCode(a, '{');
@@ -2241,11 +2499,11 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 			source.cursor.next();
 			a.equal(source.cursor.index, 11);
 			source.cursor.previous();
-			a.equal(source.cursor.index, 1);
+			a.equal(source.cursor.index, 10);
 			source.cursorY.nextPage();
 			a.equal(source.cursorY.index, 3);
 			source.cursorY.previousPage();
-			a.equal(source.cursorY.index, 0);
+			a.equal(source.cursorY.index, 2, 'page navigation preserves the original closing boundary');
 			source.selection.set(0, source.getText().length);
 			a.ok(source.fold.ranges[0]?.closed);
 			a.equal(source.selection.range().end, source.getText().length);
@@ -2257,7 +2515,7 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 			await a.sleep(20);
 			a.equalValues(visibleLineNumbers(source), [0, 1, 2, 3]);
 			source.fold.closeAll();
-			a.equal(source.cursor.index, 1, 'closing relocates a hidden caret to the header');
+			a.equal(source.cursor.index, 1, 'closing relocates a hidden caret to the content start');
 		});
 
 		it.testElement('stops horizontal and token navigation at a folded document end', async (a: TestApi) => {
@@ -2266,13 +2524,13 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 			await a.sleep(20);
 			source.cursorX.goEnd();
 			source.cursor.next();
-			a.equal(source.cursor.index, 1);
+			a.equal(source.cursor.index, 10);
 			source.cursor.nextPage();
-			a.equal(source.cursor.index, 1);
+			a.equal(source.cursor.index, 10);
 			a.ok(source.fold.ranges[0]?.closed);
 			source.cursor.go(0);
 			source.cursorToken.next();
-			a.equal(source.cursor.index, 0);
+			a.equal(source.cursor.index, 9, 'token navigation reaches the preserved closing token');
 			a.ok(source.fold.ranges[0]?.closed);
 		});
 
