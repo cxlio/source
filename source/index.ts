@@ -12,6 +12,7 @@ import {
 	type Observable,
 	onThemeChange,
 	onFontsReady,
+	onMutation,
 	virtualScroll,
 	ReplaySubject,
 	Subject,
@@ -19,6 +20,13 @@ import {
 import { textCanvas, type SourceTextSpan } from './text.js';
 import { sourceCursor } from './cursor.js';
 import { HitTest } from './hit-test.js';
+import { sourceGeometry, type SourceGeometryFeature } from './geometry.js';
+export type {
+	SourceBounds,
+	SourceCaretGeometry,
+	SourceGeometryFragment,
+	SourceGeometryFeature,
+} from './geometry.js';
 import { type BufferChange, type BufferPosition } from './buffer.js';
 import { createTextInput, type TextInputUpdate } from './input.js';
 import { Code } from './code.js';
@@ -431,6 +439,7 @@ export class Source extends Code {
 		this.buffer,
 		() => this.cursorY.index,
 		() => {
+			this.text.invalidateGeometry();
 			this.refresh.next({ dataLength: this.folding.visibleCount, resetFrom: 0 });
 			const selections = this.selectionSnapshot().map(({ anchor, head }) => ({
 				anchor: this.foldBoundary(anchor),
@@ -458,6 +467,7 @@ export class Source extends Code {
 	protected selectionSync?: (scroll: boolean) => void;
 	protected readonly text = textCanvas(this.host);
 	protected readonly hitTest = new HitTest(this.text);
+	protected readonly geometryFeature = sourceGeometry(this.buffer, this.text, this.host, this.folding);
 	protected preferredX?: number;
 	protected readonly decorationRenderer = sourceDecorations(
 		this.host,
@@ -975,6 +985,10 @@ canvas {
 		this.changes = this.changeSubject;
 	}
 
+	get geometry(): SourceGeometryFeature {
+		return this.geometryFeature;
+	}
+
 	get decorations(): SourceDecorationsFeature {
 		return this.decorationRenderer;
 	}
@@ -1478,6 +1492,8 @@ canvas {
 		refresh.next({ dataLength: this.folding.visibleCount });
 
 		return merge(
+			onMutation(this, { attributes: true, attributeFilter: ['style', 'class'] })
+				.raf(() => this.resetRenderer()),
 			onResize(host).raf(() => {
 				if (host.clientHeight > 0 && host.clientWidth > 0) text.resize();
 			}),
@@ -1519,7 +1535,7 @@ canvas {
 			onThemeChange.tap(() => {
 				text.updateStyles();
 				this.updateSearchDecorationStyle();
-				refresh.next({ dataLength: this.folding.visibleCount });
+				this.resetRenderer();
 			}),
 		);
 	}

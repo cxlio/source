@@ -91,6 +91,13 @@ export function getContext() {
 }
 
 export function textCanvas(host: HTMLElement) {
+	function layoutKey() {
+		const style = getComputedStyle(host);
+		const root = host.getRootNode();
+		const scroll = root instanceof ShadowRoot ? root.host : host;
+		return `${host.clientWidth}:${host.clientHeight}:${measureElement.offsetLeft}:${scroll.scrollTop}:${scroll.scrollLeft}:${style.font}:${style.lineHeight}:${style.tabSize}:${style.letterSpacing}:${style.wordSpacing}`;
+	}
+
 	function createLine(
 		range: Range,
 		y: number,
@@ -333,6 +340,7 @@ export function textCanvas(host: HTMLElement) {
 	}
 
 	function begin(row: number) {
+		measured = false;
 		y = 0;
 		firstVisibleLine = row;
 		toRender.length = 0;
@@ -410,6 +418,7 @@ export function textCanvas(host: HTMLElement) {
 
 	function commit(offset: number) {
 		let y = (offsetY = offset);
+		visibleParts.clear();
 		foldHost.replaceChildren();
 		measurementReady = false;
 		if (hasResized) resizeCanvas();
@@ -419,6 +428,8 @@ export function textCanvas(host: HTMLElement) {
 
 		for (const row of toRender) {
 			const lines = getVisibleSubLines(row, -offset);
+			if (y + row.height > 0 && y < host.clientHeight)
+				visibleParts.set(row, lines?.filter(part => y + part.y + part.height > 0 && y + part.y < host.clientHeight) ?? []);
 			offset = 0;
 			if (lines) for (const line of lines) commitLine(row, line, y);
 			for (const span of row.spans ?? []) {
@@ -437,6 +448,8 @@ export function textCanvas(host: HTMLElement) {
 			y += row.height;
 			if (y > maxHeight) break;
 		}
+		measuredLayout = layoutKey();
+		measured = true;
 	}
 
 	function getCharacterX(line: SubLine, index: number) {
@@ -476,29 +489,49 @@ export function textCanvas(host: HTMLElement) {
 		}
 	}
 
+	function caretRect(sourceLine: SourceLine, ch: number, part?: SubLine, emptyX = 0): TextRect {
+		return {
+			x: part ? getCharacterX(part, ch) : emptyX,
+			y: sourceLine.offsetTop + (part?.y ?? 0),
+			width: part ? getCharacterWidth(part, ch) : 1,
+			height: part?.height ?? sourceLine.height,
+			line: sourceLine.row,
+		};
+	}
+
 	function getCaret(position: TextPosition): TextRect | undefined {
 		for (const sourceLine of toRender) {
 			const ch = projectedIndex(sourceLine, position);
 			if (ch === undefined) continue;
 			const parts = [...sourceLine.lines];
 			const part = parts.find(item => ch >= item.startIndex && ch <= item.endIndex + 1) ?? parts.at(-1);
-			return {
-				x: part ? getCharacterX(part, ch) : 0,
-				y: sourceLine.offsetTop + (part?.y ?? 0),
-				width: part ? getCharacterWidth(part, ch) : 1,
-				height: part?.height ?? sourceLine.height,
-				line: position.line,
-			};
+			return { ...caretRect(sourceLine, ch, part), line: position.line };
 		}
 	}
 
-	function getSelectionRects(start: TextPosition, end: TextPosition): TextRangeRect[] {
+	function getVisibleCaret(position: TextPosition): TextRect | undefined {
+		for (const [sourceLine, parts] of visibleParts) {
+			const ch = projectedIndex(sourceLine, position);
+			if (ch === undefined) continue;
+			const part = parts.find(item => ch >= item.startIndex && (ch <= item.endIndex || ch === sourceLine.text.length && ch === item.endIndex + 1));
+			if (!part && sourceLine.text.length) return;
+			return caretRect(sourceLine, ch, part, measureElement.offsetLeft);
+		}
+	}
+
+	function getSelectionRects(
+		start: TextPosition,
+		end: TextPosition,
+		rows: Iterable<SourceLine> = toRender,
+		parts: (line: SourceLine) => Iterable<SubLine> = line => line.lines,
+		emptyX = 0,
+	): TextRangeRect[] {
 		const result: TextRangeRect[] = [];
 		if (comparePosition(start, end) === 0) return result;
-		for (const sourceLine of toRender) {
+		for (const sourceLine of rows) {
 			if (sourceLine.row > end.line || getLastLine(sourceLine) < start.line) continue;
 			if (!sourceLine.text.length && sourceLine.row >= start.line && sourceLine.row <= end.line) {
-				result.push({ x: 0, y: sourceLine.offsetTop, width: 2, height: sourceLine.height, line: sourceLine.row, start: 0, end: 0 });
+				result.push({ x: emptyX, y: sourceLine.offsetTop, width: 2, height: sourceLine.height, line: sourceLine.row, start: 0, end: 0 });
 				continue;
 			}
 			const spans: readonly SourceTextSpan[] = sourceLine.spans ?? [{ start: 0, end: sourceLine.text.length, position: { line: sourceLine.row, ch: 0 } }];
@@ -507,7 +540,7 @@ export function textCanvas(host: HTMLElement) {
 				if (comparePosition(end, span.position) <= 0 || comparePosition(start, spanEnd) >= 0) continue;
 				const rangeStart = span.endPosition ? span.start : span.start + (start.line === span.position.line ? Math.max(0, start.ch - span.position.ch) : 0);
 				const rangeEnd = span.endPosition ? span.end : span.start + (end.line === span.position.line ? Math.min(span.end - span.start, end.ch - span.position.ch) : span.end - span.start);
-				for (const part of sourceLine.lines) {
+				for (const part of parts(sourceLine)) {
 					const partStart = Math.max(rangeStart, part.startIndex);
 					const partEnd = Math.min(rangeEnd, part.endIndex + 1);
 					if (partEnd <= partStart) continue;
@@ -526,14 +559,20 @@ export function textCanvas(host: HTMLElement) {
 	}
 
 	function invalidate(start: number, end: number, lineDelta: number) {
+		invalidateGeometry();
 		lineCache.deleteWhere((_, line) =>
 			lineDelta ? line >= start : line >= start && line <= end,
 		);
 	}
 
 	function resize() {
+		invalidateGeometry();
 		hasResized = true;
 		lineCache.clear();
+	}
+
+	function invalidateGeometry() {
+		measured = false;
 	}
 
 	function setTokenColors(colors: SourceTokenColors) {
@@ -570,8 +609,11 @@ export function textCanvas(host: HTMLElement) {
 	const lineRange = document.createRange();
 	const lineCache = new Cache<number, SourceLine>();
 	const toRender: SourceLine[] = [];
+	const visibleParts = new Map<SourceLine, readonly SubLine[]>();
 
 	let y = 0;
+	let measured = false;
+	let measuredLayout = '';
 	let firstVisibleLine = 0;
 	let hasResized = true;
 	let measurementReady = false;
@@ -588,9 +630,13 @@ export function textCanvas(host: HTMLElement) {
 		canvas: ctx.canvas,
 		commit,
 		getCaret,
+		getVisibleCaret,
+		getVisibleSelectionRects: (start: TextPosition, end: TextPosition) =>
+			getSelectionRects(start, end, visibleParts.keys(), line => visibleParts.get(line) ?? [], measureElement.offsetLeft),
 		getPosition,
 		getSelectionRects,
 		invalidate,
+		invalidateGeometry,
 		measureElement,
 		foldHost,
 		resize,
@@ -606,6 +652,9 @@ export function textCanvas(host: HTMLElement) {
 
 		get offsetY() {
 			return offsetY;
+		},
+		get measured() {
+			return measured && measuredLayout === layoutKey();
 		},
 	};
 }

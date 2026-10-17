@@ -196,6 +196,155 @@ async function editorValue(a: TestApi, element: Element) {
 }
 
 export default spec('@cxl/ui.source', a => {
+	a.test('geometry', it => {
+		it.testElement('exposes viewport anchors and wrapped tab fragments without side effects', async (a: TestApi) => {
+			const value = `a\tb ${'wrapped '.repeat(18)}\nlast`;
+			const { source } = await createSourceEditor(a, value);
+			const start = source.geometry.caret(0);
+			const tab = source.geometry.fragments({ start: 1, end: 2 });
+			const character = source.geometry.fragments({ start: 0, end: 1 });
+			a.assert(start.status === 'visible');
+			a.equal(start.bounds.width, 0);
+			a.equal(start.bounds.x, character[0]?.x);
+			a.equal(start.bounds.y, character[0]?.y);
+			const mirror = a.element('div');
+			mirror.style.cssText = `width:${source.clientWidth}px;font:${getComputedStyle(source).font};white-space:pre-wrap;word-break:break-word`;
+			mirror.textContent = value;
+			const native = document.createRange();
+			a.assert(mirror.firstChild);
+			native.setStart(mirror.firstChild, 0);
+			native.setEnd(mirror.firstChild, 1);
+			const reference = native.getBoundingClientRect();
+			const editorBounds = source.getBoundingClientRect();
+			const mirrorBounds = mirror.getBoundingClientRect();
+			a.ok(Math.abs(start.bounds.x - editorBounds.x - reference.x + mirrorBounds.x) < 1);
+			a.ok(Math.abs(start.bounds.y - editorBounds.y - reference.y + mirrorBounds.y) < 1);
+			a.equal(start.bounds.height, reference.height);
+			a.equal(character[0]?.width, reference.width);
+
+			a.ok((tab[0]?.width ?? 0) > (character[0]?.width ?? 0));
+			const fragments = source.geometry.fragments({ start: 0, end: value.length });
+			a.ok(fragments.length > 2);
+			for (const fragment of fragments) {
+				const caret = source.geometry.caret(fragment.start);
+				a.assert(caret.status === 'visible');
+				a.equal(caret.bounds.x, fragment.x);
+				a.equal(caret.bounds.y, fragment.y);
+			}
+			const selection = source.selection.ranges();
+			const scroll = source.scrollTop;
+			const originalGetText = Buffer.prototype.getText;
+			const originalMeasure = Range.prototype.getBoundingClientRect;
+			Buffer.prototype.getText = () => { throw new Error('geometry must not read document text'); };
+			Range.prototype.getBoundingClientRect = () => { throw new Error('geometry must not measure text'); };
+			try {
+				for (let i = 0; i < 20; i++) {
+					a.equalValues(source.geometry.fragments({ start: value.length, end: 0 }), fragments);
+					a.equalValues(source.geometry.caret(0), start);
+				}
+			} finally {
+				Buffer.prototype.getText = originalGetText;
+				Range.prototype.getBoundingClientRect = originalMeasure;
+			}
+			a.equalValues(source.selection.ranges(), selection);
+			a.equal(source.scrollTop, scroll);
+		});
+
+		it.testElement('rejects invalid and stale inputs and recovers after painting', async (a: TestApi) => {
+			const source = new Source();
+			source.setText('before');
+			a.equal(source.geometry.caret(0).status, 'unmeasured');
+			for (const index of [-1, NaN, Infinity, 0.5, 7]) {
+				a.equal(source.geometry.caret(index).status, 'invalid');
+				a.equalValues(source.geometry.fragments({ start: 0, end: index }), []);
+			}
+			a.equalValues(source.geometry.fragments({ start: 0, end: 0 }), []);
+			const { source: editor } = await createSourceEditor(a, 'before');
+			editor.edit.replace('after', { start: 0, end: 6 });
+			a.equal(editor.geometry.caret(0).status, 'unmeasured');
+			a.equalValues(editor.geometry.fragments({ start: 0, end: 5 }), []);
+			await a.sleep(50);
+			a.equal(editor.geometry.caret(5).status, 'visible');
+			editor.remove();
+			a.equal(editor.geometry.caret(0).status, 'unmeasured');
+		});
+
+		it.testElement('tracks gutters resizing fonts and page scrolling', async (a: TestApi) => {
+			const { source } = await createSourceEditor(a, 'hello world '.repeat(12));
+			const before = source.geometry.caret(0);
+			a.assert(before.status === 'visible');
+			source.gutters = [lineNumbers()];
+			await a.sleep(75);
+			const gutter = source.geometry.caret(0);
+			a.assert(gutter.status === 'visible');
+			a.ok(gutter.bounds.x > before.bounds.x);
+			const initial = source.geometry.fragments({ start: 0, end: 80 });
+			source.style.width = '220px';
+			source.style.fontSize = '18px';
+			await a.sleep(75);
+			const resized = source.geometry.caret(0);
+			a.assert(resized.status === 'visible');
+			a.ok(resized.bounds.height > gutter.bounds.height);
+			source.style.fontSize = '24px';
+			a.equal(source.geometry.caret(0).status, 'unmeasured');
+			await a.sleep(75);
+			const font = source.geometry.caret(0);
+			a.assert(font.status === 'visible');
+			a.ok(font.bounds.height > resized.bounds.height);
+
+			a.ok(source.geometry.fragments({ start: 0, end: 80 }).length > initial.length);
+			const top = source.getBoundingClientRect().top;
+			const oldScroll = window.scrollY;
+			try {
+				window.scrollBy(0, 30);
+				await a.sleep(30);
+				const scrolled = source.geometry.caret(0);
+				a.assert(scrolled.status === 'visible');
+				a.ok(Math.abs(scrolled.bounds.y - font.bounds.y - (source.getBoundingClientRect().top - top)) < 1);
+			} finally { window.scrollTo(0, oldScroll); }
+		});
+
+		it.testElement('limits large-document and wrapped-line queries to the viewport', async (a: TestApi) => {
+			const value = `${'wrapped '.repeat(3000)}\n${'line\n'.repeat(2000)}`;
+			const { source } = await createSourceEditor(a, value);
+			a.equal(source.geometry.caret(value.length).status, 'offscreen');
+			a.ok(source.geometry.fragments({ start: 0, end: value.length }).length < 20);
+			source.scrollTop = 500;
+			a.equal(source.geometry.caret(0).status, 'unmeasured');
+			await a.sleep(75);
+			a.equal(source.geometry.caret(0).status, 'offscreen');
+			const fragments = source.geometry.fragments({ start: 0, end: value.length });
+			a.ok(fragments.length > 0 && fragments.length < 20);
+			const viewport = source.getBoundingClientRect();
+			for (const fragment of fragments) {
+				a.ok(fragment.y >= viewport.top);
+				a.ok(fragment.y + fragment.height <= viewport.bottom);
+			}
+			source.scrollTop = source.scrollHeight;
+			await a.sleep(75);
+			a.equal(source.geometry.caret(value.length).status, 'visible');
+		});
+
+		it.testElement('reports folded interiors and maps visible placeholders', async (a: TestApi) => {
+			const source = await createFoldEditor(a, 'prefix {\n hidden\n} suffix');
+			const range = source.fold.range(0);
+			a.assert(range);
+			source.fold.close(0);
+			a.equal(source.geometry.caret(range.end).status, 'unmeasured');
+			await a.sleep(50);
+			a.equal(source.geometry.caret(range.start + 1).status, 'folded');
+			a.equal(source.geometry.caret(range.start).status, 'visible');
+			a.equal(source.geometry.caret(range.end).status, 'visible');
+			const fragments = source.geometry.fragments(range);
+			a.equal(fragments.length, 1);
+			a.equal(fragments[0]?.start, range.start);
+			a.equal(fragments[0]?.end, range.end);
+			source.fold.open(0);
+			await a.sleep(50);
+			a.equal(source.geometry.caret(range.start + 1).status, 'visible');
+		});
+	});
+
 	a.test('demo', it => {
 		let figureStarted = false;
 		const figure = it.figure('folding-demo',
