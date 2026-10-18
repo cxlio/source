@@ -168,6 +168,21 @@ export default spec('Source line rendering benchmarks', async s => {
 		);
 	});
 
+	s.test('large-document active search edit', async a => {
+		const source = a.element(Source);
+		source.style.cssText =
+			'display:block;width:320px;height:160px;font:12px monospace';
+		source.setText('alpha beta\n'.repeat(LineCount));
+		await a.sleep(20);
+		source.search.highlight('alpha');
+		let matching = true;
+		await a.benchmark(() => {
+			source.edit.replace(matching ? 'x' : 'h', { start: 3, end: 4 });
+			matching = !matching;
+			return source.cursor.index;
+		}, { ...featureBenchmarkOptions, maxRegression: 30 });
+	});
+
 	s.test('large-document cursor navigation', async a => {
 		const source = a.element(Source);
 		source.setText(createLargeSource(HistoryLineCount));

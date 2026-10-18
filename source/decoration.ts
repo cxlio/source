@@ -72,9 +72,15 @@ interface DecorationCollection {
 
 type DecorationSurface = ReturnType<typeof createSurface>;
 
+export interface SourceDecorationCollection<T> extends SourceDecorationSet<T> {
+	replaceRange(range: SourceRange, decorations: readonly SourceDecoration<T>[]): void;
+}
+
 export interface SourceDecorationRenderer extends SourceDecorationsFeature {
 	readonly aboveCanvas: HTMLCanvasElement;
 	readonly behindCanvas: HTMLCanvasElement;
+
+	create<T>(options: SourceDecorationLayerOptions<T>): SourceDecorationCollection<T>;
 	render(): void;
 	replaced(change: SourceDecorationChange): void;
 	reset(): void;
@@ -190,6 +196,7 @@ export function sourceDecorations(
 					const { range, value } = entry.decoration;
 					if (range.end <= change.start) continue;
 					if (range.start >= change.end) {
+						if (!delta) continue;
 						entry.decoration = {
 							range: {
 								start: range.start + delta,
@@ -211,6 +218,19 @@ export function sourceDecorations(
 
 		return {
 			add,
+			replaceRange(range: SourceRange, decorations: readonly SourceDecoration<T>[]) {
+				let remaining = 0;
+				for (const entry of entries) {
+					const start = entry.decoration.range.start;
+					if (start >= range.start && start < range.end) entry.removed = true;
+					else entries[remaining++] = entry;
+				}
+				entries.length = remaining;
+				for (const decoration of decorations)
+					entries.push({ decoration: normalize(decoration), removed: false });
+				indexed = false;
+				changed();
+			},
 			replaceAll(decorations: readonly SourceDecoration<T>[]) {
 				collection.reset();
 				for (const decoration of decorations)

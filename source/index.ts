@@ -36,7 +36,6 @@ import type { SourceToken, SourceTokenSpan } from './highlight.js';
 export { type SourceFoldFeature, type SourceFoldRange } from './fold.js';
 import {
 	sourceDecorations,
-	type SourceDecorationSet,
 	type SourceDecorationsFeature,
 	type SourceRange,
 } from './decoration.js';
@@ -503,8 +502,8 @@ export class Source extends Code {
 			};
 		},
 	);
-	protected readonly searchDecorations: SourceDecorationSet<undefined> =
-		this.decorations.create({
+	protected readonly searchDecorations =
+		this.decorationRenderer.create<undefined>({
 			layer: 'behind-text',
 			paint: ({ context, fragments }) => {
 				context.fillStyle = this.searchDecorationColor;
@@ -520,6 +519,8 @@ export class Source extends Code {
 		});
 	protected searchDecorationAlpha = 1;
 	protected searchDecorationColor = DefaultSearchHighlight;
+	protected searchRanges: { start: number; end: number }[] = [];
+	protected searchHighlightTimer?: number;
 	protected searchHighlight?: {
 		query: SourceSearchQuery;
 		caseSensitive?: boolean;
@@ -872,6 +873,7 @@ canvas {
 					function resetEditor() {
 						$.folding.reset();
 						$.clearHistory();
+						$.highlightSearch($.searchHighlight?.query, $.searchHighlight);
 						$.blockAnchor = undefined;
 						$.selectionExtending = false;
 						inputEnd = inputStart = 0;
@@ -1297,7 +1299,10 @@ canvas {
 		query: SourceSearchQuery | undefined,
 		options: SourceSearchOptions = {},
 	) {
+		clearTimeout(this.searchHighlightTimer);
+		this.searchHighlightTimer = undefined;
 		if (query === undefined || query === '') {
+			this.searchRanges = [];
 			this.searchHighlight = undefined;
 			this.searchDecorations.clear();
 			return;
@@ -1307,11 +1312,89 @@ canvas {
 			query,
 			caseSensitive: options.caseSensitive,
 		};
+		this.searchRanges = [...searchMatches(this.getText(), query, options.caseSensitive)];
 		this.searchDecorations.replaceAll(
-			[...searchMatches(this.getText(), query, options.caseSensitive)].map(
-				range => ({ range, value: undefined }),
-			),
+			this.searchRanges.map(range => ({ range, value: undefined })),
 		);
+	}
+
+	protected updateSearchHighlights(change: BufferChange) {
+		const search = this.searchHighlight;
+		if (!search) return;
+		if (typeof search.query !== 'string') {
+			if (this.searchHighlightTimer === undefined)
+				this.searchHighlightTimer = window.setTimeout(() => {
+					this.highlightSearch(search.query, search);
+				}, 0);
+			return;
+		}
+		const ranges = this.searchRanges;
+		const size = search.query.length;
+		const delta = change.text.length - (change.end - change.start);
+		const editEnd = change.start + change.text.length;
+		let left = 0;
+		let high = ranges.length;
+		while (left < high) {
+			const middle = (left + high) >> 1;
+			if ((ranges[middle]?.end ?? 0) <= change.start) left = middle + 1;
+			else high = middle;
+		}
+		let right = left;
+		while (right < ranges.length && (ranges[right]?.start ?? Infinity) < change.end)
+			right++;
+		for (let index = right; delta && index < ranges.length; index++) {
+			const range = ranges[index];
+			if (range) {
+				range.start += delta;
+				range.end += delta;
+			}
+		}
+		const start = Math.max(ranges[left - 1]?.end ?? 0, change.start - size + 1);
+		const result = this.scanSearchHighlights(start, right, editEnd, search.query, search.caseSensitive);
+		this.searchRanges = ranges.slice(0, left).concat(result.updated, ranges.slice(result.right));
+		this.searchDecorations.replaceRange(
+			{ start, end: result.end },
+			result.updated.map(range => ({ range, value: undefined })),
+		);
+	}
+
+	protected scanSearchHighlights(
+		start: number,
+		right: number,
+		editEnd: number,
+		query: string,
+		caseSensitive?: boolean,
+	) {
+		const ranges = this.searchRanges;
+		const size = query.length;
+		const updated: { start: number; end: number }[] = [];
+		let cursor = start;
+		let removedEnd = editEnd;
+		while (cursor < this.buffer.length) {
+			const chunkEnd = Math.min(this.buffer.length, cursor + 4096 + size - 1);
+			const value = this.buffer.getText(cursor, chunkEnd);
+			let next = cursor;
+			for (const match of searchMatches(value, query, caseSensitive)) {
+				const range = { start: cursor + match.start, end: cursor + match.end };
+				while (right < ranges.length && (ranges[right]?.start ?? Infinity) < range.start) {
+					removedEnd = Math.max(removedEnd, ranges[right]?.end ?? 0);
+					right++;
+				}
+				if (range.start >= editEnd && ranges[right]?.start === range.start)
+					return { updated, right, end: range.start };
+				updated.push(range);
+				next = range.end;
+			}
+			cursor = Math.max(next, chunkEnd - size + 1);
+			if (chunkEnd === this.buffer.length) cursor = chunkEnd;
+			while (right < ranges.length && (ranges[right]?.start ?? Infinity) < cursor) {
+				removedEnd = Math.max(removedEnd, ranges[right]?.end ?? 0);
+				right++;
+			}
+			if (cursor >= editEnd + size && cursor >= removedEnd)
+				return { updated, right, end: cursor };
+		}
+		return { updated, right, end: this.buffer.length + 1 };
 	}
 
 	protected historyRecordSize(record: HistoryRecord) {
@@ -1587,8 +1670,7 @@ canvas {
 			change.lineDelta,
 		);
 		this.decorationRenderer.replaced(change);
-		if (this.searchHighlight)
-			this.highlightSearch(this.searchHighlight.query, this.searchHighlight);
+		this.updateSearchHighlights(change);
 		this.refresh.next({ dataLength: this.folding.visibleCount });
 	}
 

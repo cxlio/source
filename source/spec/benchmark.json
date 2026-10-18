@@ -924,6 +924,33 @@
             "sampleTime": 20,
             "samples": 10
           }
+        },
+        "Source line rendering benchmarks > large-document active search edit": {
+          "type": "benchmark",
+          "iterations": 5,
+          "values": [
+            3,
+            2.9,
+            2.9200000002980233,
+            2.879999999701977,
+            4,
+            2.5,
+            2.4600000008940697,
+            2.4799999997019766,
+            2.5200000002980234,
+            2.4399999991059302
+          ],
+          "median": 2.7,
+          "mad": 0.22000000029802336,
+          "p75": 2.9150000002235172,
+          "p95": 3.549999999999999,
+          "operationsPerSecond": 370.3703703703703,
+          "options": {
+            "warmup": 20,
+            "sampleTime": 20,
+            "samples": 10,
+            "maxRegression": 30
+          }
         }
       }
     }

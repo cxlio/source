@@ -1524,6 +1524,173 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 			a.equal(paintedWidth(canvas), 0, 'search matches cleared');
 		});
 
+		it.testElement('bounds literal highlight work after large-document edits', async a => {
+			const { source } = await createSourceEditor(a, 'alpha beta\n'.repeat(100_000));
+			source.search.highlight('alpha');
+			const read = Buffer.prototype.getText;
+			const exec = RegExp.prototype.exec;
+			let fullReads = 0;
+			let scanned = 0;
+			let matches = 0;
+			a.mock(RegExp.prototype, 'exec', function (this: RegExp, value: string) {
+				if (this.source === 'alpha') matches++;
+				return exec.call(this, value);
+			});
+			Buffer.prototype.getText = function (start, end) {
+				if (start === undefined && end === undefined) fullReads++;
+				const value = read.call(this, start, end);
+				scanned += value.length;
+				return value;
+			};
+			try {
+				source.edit.replace('x', { start: 3, end: 3 });
+				a.equal(fullReads, 0, 'no synchronous full-document snapshot');
+				a.ok(scanned < 16_384, `literal scan and viewport reads are bounded: ${scanned}`);
+				a.ok(matches < 100, `unaffected matches are reused: ${matches}`);
+			} finally {
+				Buffer.prototype.getText = read;
+			}
+		});
+
+		it.testElement('coalesces regex highlight snapshots outside edits', async a => {
+			const { source } = await createSourceEditor(a, 'alpha beta\n'.repeat(10_000));
+			source.search.highlight(/alpha.*beta/);
+			const read = Buffer.prototype.getText;
+			let fullReads = 0;
+			Buffer.prototype.getText = function (start, end) {
+				if (start === undefined && end === undefined) fullReads++;
+				return read.call(this, start, end);
+			};
+			try {
+				source.edit.replace('x', { start: 2, end: 2 });
+				source.edit.replace('y', { start: 3, end: 3 });
+				a.equal(fullReads, 0, 'edits do not snapshot regex input');
+				await a.sleep(30);
+				a.equal(fullReads, 1, 'rapid edits share one regex scan');
+			} finally {
+				Buffer.prototype.getText = read;
+			}
+		});
+
+		const searchCases: [string, string | RegExp, boolean?][] = [
+			['Alpha alpha ALPHA\nalpha beta', 'alpha'],
+			['Alpha alpha ALPHA\nalpha beta', 'alpha', true],
+			['alpha\r\nbeta alpha\r\nbeta', 'ha\r\nbe'],
+			['aaaaaaa aaa aaa', 'aaa'],
+			['a'.repeat(9000) + '\naaa', 'aaa'],
+			['😀alpha 😀alpha\n😀alpha', '😀alpha'],
+			['alpha\nbeta\nalpha\nBETA', /^alpha.*\nbeta/gim],
+			['alpha\nbeta alpha\nbeta', /(?<=alpha)[\s\S]*beta/],
+			['alpha alpha\nbeta', /alpha/y, false],
+		];
+		for (const [index, [value, query, caseSensitive]] of searchCases.entries())
+			it.testElement(`keeps edited search highlights equivalent to a fresh scan ${index}`, async (a: TestApi) => {
+				const { source } = await createSourceEditor(a, value);
+				const { source: reference } = await createSourceEditor(a, value);
+				const options = { caseSensitive };
+				if (query instanceof RegExp) query.lastIndex = 3;
+				source.search.highlight(query, options);
+				const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="decorations-behind"]');
+				const expected = reference.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="decorations-behind"]');
+				a.assert(canvas);
+				a.assert(expected);
+				let checks = 0;
+				const check = async () => {
+					reference.setText(source.getText());
+					reference.search.highlight(query, options);
+					await a.sleep(25);
+					a.ok(canvas.toDataURL() === expected.toDataURL(), `incremental paint matches full scan ${checks++}`);
+				};
+				source.edit.replace('a', { start: 2, end: 2 });
+				await check();
+				source.edit.replace('x', { start: 2, end: 3 });
+				await check();
+				source.edit.replace('', { start: 1, end: 4 });
+				await check();
+				source.edit.replace('alpha\r\nbeta', { start: 0, end: 2 });
+				await check();
+				source.history.undo();
+				await check();
+				source.history.redo();
+				await check();
+				source.scrollTop = reference.scrollTop = source.scrollHeight;
+				await check();
+				source.edit.replace('', { start: 0, end: source.getText().length });
+				await check();
+				source.setText(value);
+				await check();
+			});
+
+		it.testElement('cancels stale regex scans on clear, query change and reset', async a => {
+			const { source } = await createSourceEditor(a, 'alpha beta');
+			const read = source.getText.bind(source);
+			let fullReads = 0;
+			source.getText = (start, end) => {
+				if (start === undefined && end === undefined) fullReads++;
+				return read(start, end);
+			};
+			try {
+				for (const action of [
+					() => source.search.highlight(),
+					() => source.search.highlight('beta'),
+					() => source.setText('alpha beta'),
+				]) {
+					source.search.highlight(/alpha/);
+					source.edit.replace('x', { start: 2, end: 2 });
+					action();
+					fullReads = 0;
+					await a.sleep(25);
+					a.equal(fullReads, 0, 'superseded regex scan does not run');
+				}
+			} finally {
+				source.getText = read;
+			}
+		});
+
+		it.testElement('rescans Unicode zero-length regex matches after coalesced edits', async a => {
+			const { source } = await createSourceEditor(a, '😀a\n😀b');
+			source.search.highlight(/(?=.)/gu);
+			const exec = RegExp.prototype.exec;
+			const positions: number[] = [];
+			a.mock(RegExp.prototype, 'exec', function (this: RegExp, value: string) {
+				const match = exec.call(this, value);
+				if (this.source === '(?=.)' && match) positions.push(match.index);
+				return match;
+			});
+			source.edit.replace('x', { start: 2, end: 2 });
+			source.edit.replace('\n', { start: 0, end: 0 });
+			a.equalValues(positions, []);
+			await a.sleep(25);
+			a.equalValues(positions, [1, 3, 4, 6, 8]);
+		});
+
+		it.testElement('updates literal highlights through every mode lookup', async (a: TestApi) => {
+			const { source } = await createSourceEditor(a, 'alpha beta\nalpha beta');
+			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="decorations-behind"]');
+			a.assert(canvas);
+			const read = source.getText.bind(source);
+			let fullReads = 0;
+			source.getText = (start, end) => {
+				if (start === undefined && end === undefined) fullReads++;
+				return read(start, end);
+			};
+			for (const mode of ['text', 'javascript', 'typescript', 'html', 'json', 'gb', 'markdown', 'basic', 'shell']) {
+				await loadSourceHighlighter(mode);
+				source.mode = mode;
+				await a.sleep(20);
+				source.search.highlight('alpha');
+				fullReads = 0;
+				source.edit.replace('x', { start: 2, end: 2 });
+				a.equal(fullReads, 0, `${mode} uses the incremental search path`);
+				await a.sleep(20);
+				const actual = canvas.toDataURL();
+				source.search.highlight('alpha');
+				a.ok(actual === canvas.toDataURL(), `${mode} matches a fresh scan`);
+				source.history.undo();
+			}
+			source.getText = read;
+		});
+
 		it.testElement('replaces the next and all search matches', async a => {
 			const { source } = await createSourceEditor(a, 'one ONE one');
 
@@ -1758,6 +1925,7 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 
 		it.testElement('edit through the active browser input path', async a => {
 			const { source, target } = await createSourceEditor(a, 'one');
+			source.search.highlight('one');
 			await a.a11y(source);
 			await editorAction(a, target, 'type', 'X');
 			a.ok(
