@@ -2036,6 +2036,94 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 			);
 		});
 
+		it.testElement('reveals distant public cursor navigation after mount and resize', async (a: TestApi) => {
+			const value = Array.from({ length: 200 }, (_, line) => `line ${line + 1}`).join('\n');
+			const source = a.element(Source);
+			source.style.cssText = 'display:block;width:600px;height:240px;font:12px monospace';
+			source.setText(value);
+			await a.sleep(100);
+			source.cursorY.go(149);
+			source.cursorX.go(2);
+			await a.sleep(100);
+			a.equalValues(source.cursor.position(), { line: 149, ch: 2 });
+			a.equal(source.geometry.caret(source.cursor.index).status, 'visible', 'distant navigation reveals the caret');
+			const caret = source.geometry.caret(source.cursor.index);
+			a.assert(caret.status === 'visible');
+			a.ok(caret.bounds.height >= 12, 'the caret is not clipped at the viewport edge');
+			source.style.cssText = 'display:block;width:320px;height:160px;font:20px monospace';
+			await a.sleep(100);
+			source.cursorY.go(29);
+			source.cursorX.go(3);
+			await a.sleep(100);
+			a.equalValues(source.cursor.position(), { line: 29, ch: 3 });
+			a.equal(source.geometry.caret(source.cursor.index).status, 'visible', 'reverse navigation after resize reveals the caret');
+			const head = source.cursorY.range(179).start + 2;
+			source.selection.set(head - 2, head);
+			await a.sleep(100);
+			a.equalValues(source.selection.range(), { start: head - 2, end: head });
+			a.equal(source.geometry.caret(head).status, 'visible', 'selection reveals its head');
+			source.edit.replace('edited');
+			await a.sleep(100);
+			a.equal(source.getText(head - 2, head + 4), 'edited');
+			source.cursorY.go(179);
+			await a.sleep(100);
+			a.equal(source.geometry.caret(source.cursor.index).status, 'visible', 'navigation after editing reveals the caret');
+			source.cursorY.go(19);
+			source.cursorY.go(199);
+			source.cursorY.go(79);
+			await a.sleep(100);
+			a.equal(source.cursorY.index, 79);
+			a.equal(source.geometry.caret(source.cursor.index).status, 'visible', 'the latest navigation wins');
+			const parent = source.parentElement;
+			a.assert(parent);
+			source.remove();
+			parent.append(source);
+			await a.sleep(100);
+			source.cursorY.go(49);
+			await a.sleep(100);
+			a.equal(source.geometry.caret(source.cursor.index).status, 'visible', 'navigation works after remount');
+		});
+
+		it.testElement('reveals distant wrapped and folded rows with viewport bounded rendering', async (a: TestApi) => {
+			const source = a.element(Source);
+			let renderedLines = 0;
+			source.style.cssText = 'display:block;width:200px;height:160px;padding:8px 12px;font:12px monospace';
+			source.gutters = [{
+				element: document.createElement('div'),
+				render: ({ lines }) => { renderedLines = lines.length; },
+			}];
+			source.highlighter = foldHighlighter;
+			source.setText(Array.from({ length: 250 }, (_, line) =>
+				line === 10 ? '{' : line === 60 ? '}' : `line ${line + 1} ${'wrapped '.repeat(line % 7)}`,
+			).join('\n'));
+			await a.sleep(100);
+			source.fold.close(10);
+			await a.sleep(100);
+			for (const line of [149, 229, 0, 249, 149]) {
+				source.cursorY.go(line);
+				source.cursorX.go(2);
+				await a.sleep(100);
+				a.equalValues(source.cursor.position(), { line, ch: 2 });
+				a.equal(source.geometry.caret(source.cursor.index).status, 'visible', `line ${line + 1} is revealed`);
+				a.ok(renderedLines > 0 && renderedLines < 50, 'rendering remains viewport bounded');
+				a.equal(source.fold.range(10)?.closed, true);
+			}
+			source.cursorY.go(30);
+			await a.sleep(100);
+			a.equal(source.fold.range(10)?.closed, false);
+			a.equal(source.geometry.caret(source.cursor.index).status, 'visible', 'navigation reveals hidden text');
+			source.style.cssText = 'display:block;width:260px;height:180px;font:12px monospace';
+			source.gutters = [lineNumbers()];
+			source.setText(Array.from({ length: 1000 }, (_, line) => `line ${line + 1} ${'variable wrapped text '.repeat(line % 8)}`).join('\n'));
+			await a.sleep(100);
+			for (const line of [749, 50, 999, 0, 500, 150, 990, 100, 800, 10, 400, 700]) {
+				source.cursorY.go(line);
+				source.cursorX.go(2);
+				await a.sleep(150);
+				a.equal(source.geometry.caret(source.cursor.index).status, 'visible', `wrapped line ${line + 1} is revealed`);
+			}
+		});
+
 		it.testElement('scroll the caret into view during page navigation', async a => {
 			const { source, target } = await createSourceEditor(
 				a,

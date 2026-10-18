@@ -176,6 +176,7 @@ interface ActiveSearch {
 }
 
 const MaxHistoryEntries = 1_000;
+const EstimatedRowHeight = 50;
 const MaxHistoryText = 16 * 1024 * 1024;
 const DefaultSearchHighlight = 'rgba(255, 210, 0, 0.35)';
 const DefaultSelection: SourceSelection = { anchor: 0, head: 0 };
@@ -461,6 +462,7 @@ export class Source extends Code {
 	})();
 	protected readonly host = create('div', { id: 'body' });
 	protected offsetY = 0;
+	protected readonly rowHeights = new Map<number, number>();
 	protected readonly redoRecords: HistoryRecord[] = [];
 	protected redoSize = 0;
 	protected readonly refresh = new ReplaySubject<{ dataLength: number; resetFrom?: number }>(1);
@@ -686,6 +688,7 @@ canvas {
 						if (activeCaret) input.setBounds(cursor.bounds);
 					}
 
+					let revealDistantHead = false;
 					function scrollToHead() {
 						const position = buffer.positionAt($.selectionHead);
 						const caret = text.getCaret(position);
@@ -695,9 +698,9 @@ canvas {
 							else if (top + caret.height > $.clientHeight)
 								$.scrollTop += top + caret.height - $.clientHeight;
 						} else {
-							const lineHeight = text.measureElement.offsetHeight || 16;
-							$.scrollTop = $.folding.rowAt(position.line) * lineHeight;
+							$.scrollToRow($.folding.rowAt(position.line));
 						}
+						return !caret;
 					}
 
 					function setSelection(next: number, extend = false) {
@@ -877,10 +880,13 @@ canvas {
 
 					$.selectionSync = scroll => {
 						syncInput();
-						if (scroll) scrollToHead();
+						revealDistantHead = scroll ? scrollToHead() : false;
 						renderSelection();
 					};
-					$.rendered = renderSelection;
+					$.rendered = () => {
+						if (revealDistantHead) revealDistantHead = scrollToHead();
+						renderSelection();
+					};
 					$.reset = resetEditor;
 					resetEditor();
 
@@ -1479,6 +1485,8 @@ canvas {
 
 	protected override initializeRenderer() {
 		const { decorationRenderer, host, refresh, text } = this;
+		this.rowHeights.clear();
+		const renderedHeights = new Map<number, number>();
 		host.append(
 			this.gutterHost,
 			decorationRenderer.behindCanvas,
@@ -1506,16 +1514,29 @@ canvas {
 				host,
 				scrollElement: this,
 				scrollContainer: this.shadowRoot ?? undefined,
-				refresh,
+				estimateSize: EstimatedRowHeight,
+				refresh: refresh.tap(({ dataLength, resetFrom = dataLength }) => {
+					for (const row of this.rowHeights.keys())
+						if (row >= resetFrom || row >= dataLength) this.rowHeights.delete(row);
+				}),
 				render: (index, order) => {
 					const line = this.folding.lineAt(index);
 					if (order === 0) text.begin(line);
 					const spans = this.folding.spans(line);
-					return spans ? this.renderFoldedLine(line, spans) : text.renderLine(line, this.buffer.getLine(line), this.highlight.getLine(line));
+					const rect = spans ? this.renderFoldedLine(line, spans) : text.renderLine(line, this.buffer.getLine(line), this.highlight.getLine(line));
+					renderedHeights.set(index, rect.offsetHeight);
+					return rect;
 				},
 				dataLength: this.folding.visibleCount,
 				translate: false,
 			}).tap(event => {
+				const last = text.toRender.at(-1);
+				const lastRow = last ? this.folding.rowAt(last.row) : -1;
+				const measuredEnd = lastRow >= event.end || event.end === event.dataLength ? event.end : event.end - 1;
+				for (const [row, height] of renderedHeights)
+					if (event.atEnd || (row >= event.start - 1 && row < measuredEnd))
+						this.rowHeights.set(row, height);
+				renderedHeights.clear();
 				this.offsetY = event.offset;
 				text.commit(event.offset);
 				decorationRenderer.render();
@@ -1526,7 +1547,6 @@ canvas {
 						offset: event.offset,
 					});
 				this.rendered();
-				const last = text.toRender.at(-1);
 				if (event.end < this.folding.visibleCount && last &&
 					event.offset + last.offsetTop + last.height < host.clientHeight)
 					refresh.next({ dataLength: this.folding.visibleCount });
@@ -1543,6 +1563,19 @@ canvas {
 	protected override resetRenderer() {
 		this.text.resize();
 		this.refresh.next({ dataLength: this.folding.visibleCount, resetFrom: 0 });
+	}
+
+	protected scrollToRow(row: number) {
+		let top = row * EstimatedRowHeight;
+		let total = this.folding.visibleCount * EstimatedRowHeight;
+		for (const [index, height] of this.rowHeights) {
+			const delta = height - EstimatedRowHeight;
+			total += delta;
+			if (index < row) top += delta;
+		}
+		const viewport = this.host.clientHeight;
+		const maximum = total - viewport;
+		this.scrollTop = maximum > 0 ? Math.ceil(Math.max(top - viewport / 2, 0) / maximum * (this.scrollHeight - this.clientHeight)) : 0;
 	}
 
 	protected override replaced(change: BufferChange) {
