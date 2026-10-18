@@ -11,6 +11,7 @@ import {
 	type SourceHighlighter,
 	type SourceToken,
 	type SourceChange,
+	type SourceCheckpointFeature,
 	type SourceDecorationFragment,
 } from './index.js';
 import { createTextareaInput } from './input.js';
@@ -1702,6 +1703,43 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 			a.equal(source.getText(), 'two x x');
 		});
 
+		it.should('tracks exact checkpoint content through edits and history', a => {
+			const source = new Source();
+			const checkpoint: SourceCheckpointFeature = source.checkpoint;
+			a.equal(checkpoint.dirty(), false);
+			source.setText('alpha\r\n😀');
+			checkpoint.mark();
+			source.selection.set(1, 3);
+			a.equal(checkpoint.dirty(), false);
+			source.edit.replace('X', { start: 1, end: 2 });
+			a.equal(checkpoint.dirty(), true);
+			source.history.undo();
+			a.equal(checkpoint.dirty(), false);
+			source.history.redo();
+			a.equal(checkpoint.dirty(), true);
+			source.edit.replace('l', { start: 1, end: 2 });
+			a.equal(checkpoint.dirty(), false);
+			source.edit.replace('!', { start: 0, end: 0 });
+			checkpoint.mark();
+			source.history.undo();
+			a.equal(checkpoint.dirty(), true);
+			source.history.redo();
+			a.equal(checkpoint.dirty(), false);
+		});
+
+		it.testElement('preserves checkpoints across setText until marked again', async a => {
+			const { source } = await createSourceEditor(a, 'alpha');
+			source.checkpoint.mark();
+			source.setText('bravo');
+			a.equal(source.checkpoint.dirty(), true);
+			source.setText('alpha');
+			a.equal(source.checkpoint.dirty(), false);
+			source.setText('');
+			a.equal(source.checkpoint.dirty(), true);
+			source.checkpoint.mark();
+			a.equal(source.checkpoint.dirty(), false);
+		});
+
 		it.testElement('undoes and redoes edits with their selections', async a => {
 			const { source, target } = await createSourceEditor(a, 'alpha');
 			const history: { undo(): void; redo(): void } = source.history;
@@ -3219,6 +3257,85 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 	});
 
 	a.test('Buffer', it => {
+		it.should('isolates checkpoint pieces and backing text across edits and resets', a => {
+			const buffer = new Buffer();
+			buffer.reset('tail');
+			buffer.insert(0, 'a');
+			buffer.mark();
+			buffer.insert(1, 'b');
+			a.equal(buffer.dirty(), true);
+			buffer.delete(1, 2);
+			a.equal(buffer.dirty(), false);
+			buffer.reset('tail');
+			buffer.insert(0, 'z');
+			a.equal(buffer.dirty(), true);
+			buffer.replace(0, 1, 'a');
+			a.equal(buffer.dirty(), false);
+			buffer.mark();
+			buffer.replace(0, buffer.length, 'atail');
+			a.equal(buffer.dirty(), false);
+		});
+
+		it.should('matches exact checkpoint equality through varied edit sequences', a => {
+			const buffer = new Buffer();
+			let value = 'alpha\r\n😀\nbeta';
+			let marked = '';
+			buffer.reset(value);
+			for (let edit = 0; edit < 500; edit++) {
+				if (edit % 17 === 0) {
+					buffer.mark();
+					marked = value;
+				}
+				const start = edit * 7 % (value.length + 1);
+				const end = Math.min(value.length, start + edit % 4);
+				const text = edit % 3 === 0 ? '😀\n' : '';
+				buffer.replace(start, end, text);
+				value = value.slice(0, start) + text + value.slice(end);
+				a.equal(buffer.dirty(), value !== marked);
+				if (edit % 11 === 0) {
+					buffer.reset(marked);
+					value = marked;
+					a.equal(buffer.dirty(), false);
+				}
+			}
+		});
+
+		it.should('skips unchanged checkpoint ranges and caches large-document checks', a => {
+			const buffer = new Buffer();
+			buffer.reset(createLargeSource());
+			const read = buffer.getText.bind(buffer);
+			buffer.getText = (start, end) => {
+				a.ok(start !== undefined && end !== undefined, 'does not read the full document');
+				return read(start, end);
+			};
+			buffer.mark();
+			const index = buffer.indexAt({ line: 50_000, ch: 4 });
+			const original = buffer.charAt(index);
+			buffer.replace(index, index + 1, 'X');
+			const slice = String.prototype.slice;
+			let compared = 0;
+			a.mock(String.prototype, 'slice', function (this: string, start = 0, end = this.length) {
+				compared += end - start;
+				return slice.call(this, start, end);
+			});
+			a.equal(buffer.dirty(), true);
+			a.equal(compared, 2, 'compares only the replaced character');
+			a.equal(buffer.dirty(), true);
+			a.equal(compared, 2, 'reuses the cached result');
+			buffer.replace(index, index + 1, original);
+			compared = 0;
+			a.equal(buffer.dirty(), false);
+			a.equal(compared, 2, 'restoration compares only the replaced character');
+			a.equal(buffer.dirty(), false);
+			a.equal(compared, 2, 'reuses a cached clean result');
+			buffer.insert(index, 'added');
+			compared = 0;
+			a.equal(buffer.dirty(), true);
+			a.equal(compared, 0, 'rejects different lengths without comparing content');
+			buffer.delete(index, index + 5);
+			a.equal(buffer.dirty(), false);
+		});
+
 		it.should('read empty multiline and CRLF documents', a => {
 			const buffer = new Buffer();
 			buffer.reset('');

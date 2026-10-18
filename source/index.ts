@@ -123,6 +123,11 @@ export interface SourceHistoryFeature {
 	redo(): void;
 }
 
+export interface SourceCheckpointFeature {
+	mark(): void;
+	dirty(): boolean;
+}
+
 type CursorMovement =
 	| 'goStart'
 	| 'goEnd'
@@ -362,6 +367,10 @@ export class Source extends Code {
 			range
 				? this.applyEdit(value, range)
 				: this.applySelectionEdit(value),
+	};
+	readonly checkpoint: SourceCheckpointFeature = {
+		mark: () => this.buffer.mark(),
+		dirty: () => this.buffer.dirty(),
 	};
 	readonly history: SourceHistoryFeature = {
 		undo: () => {

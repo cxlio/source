@@ -23,6 +23,14 @@ interface IndexedPiece extends Piece {
 	lineBreaks: number;
 }
 
+interface BufferCheckpoint {
+	table: Piece[];
+	original: string;
+	add: string;
+	length: number;
+	generation: number;
+}
+
 function getItem<T>(values: readonly T[], index: number): T {
 	const value = values[index];
 	if (value === undefined) throw new RangeError('Index out of bounds');
@@ -48,9 +56,29 @@ export class Buffer {
 	#lineBreaks = [0];
 	#original = '';
 	#originalLineBreaks: number[] = [];
+	#generation = 0;
+	#checkpoint: BufferCheckpoint = {
+		table: [], original: '', add: '', length: 0, generation: 0,
+	};
+	#checkpointDirty: boolean | undefined = false;
 
 	get length() {
 		return this.#lengths.at(-1) ?? 0;
+	}
+
+	mark() {
+		this.#checkpoint = {
+			table: this.#table.map(piece => ({ ...piece })),
+			original: this.#original,
+			add: this.#addBuffer,
+			length: this.length,
+			generation: this.#generation,
+		};
+		this.#checkpointDirty = false;
+	}
+
+	dirty(): boolean {
+		return this.#checkpointDirty ??= this.#differsFromCheckpoint();
 	}
 
 	getLineCount() {
@@ -174,6 +202,7 @@ export class Buffer {
 
 		this.#table = this.#merge(table);
 		this.#rebuildIndexes();
+		this.#checkpointDirty = undefined;
 		const newLineEnd = this.positionAt(start + text.length).line;
 		return {
 			start,
@@ -187,6 +216,8 @@ export class Buffer {
 	}
 
 	reset(source: string) {
+		this.#generation++;
+		this.#checkpointDirty = undefined;
 		this.#original = source;
 		this.#originalLineBreaks = [];
 		this.#appendLineBreaks(this.#originalLineBreaks, source, 0);
@@ -196,6 +227,36 @@ export class Buffer {
 			? [this.#piece('original', 0, source.length)]
 			: [];
 		this.#rebuildIndexes();
+	}
+
+	#differsFromCheckpoint() {
+		const checkpoint = this.#checkpoint;
+		if (this.length !== checkpoint.length) return true;
+		let markedIndex = 0;
+		let markedOffset = 0;
+		for (const piece of this.#table) {
+			let offset = 0;
+			while (offset < piece.length) {
+				const marked = getItem(checkpoint.table, markedIndex);
+				const length = Math.min(piece.length - offset, marked.length - markedOffset);
+				const start = piece.start + offset;
+				const markedStart = marked.start + markedOffset;
+				if (
+					(checkpoint.generation !== this.#generation ||
+						piece.source !== marked.source || start !== markedStart) &&
+					this.#source(piece).slice(start, start + length) !==
+						(marked.source === 'original' ? checkpoint.original : checkpoint.add)
+							.slice(markedStart, markedStart + length)
+				) return true;
+				offset += length;
+				markedOffset += length;
+				if (markedOffset === marked.length) {
+					markedIndex++;
+					markedOffset = 0;
+				}
+			}
+		}
+		return false;
 	}
 
 	#appendLineBreaks(target: number[], text: string, offset: number) {
