@@ -2266,16 +2266,28 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 	});
 
 	a.test('folding', it => {
+		it.testElement('does not fold parentheses without fold metadata', async (a: TestApi) => {
+			for (const value of ['invoke(\n  hidden\n);', 'invoke(\n  hidden']) {
+				const { source } = await createSourceEditor(a, value);
+				source.mode = 'javascript';
+				await loadSourceHighlighter(source.mode);
+				await a.sleep(80);
+				a.equalValues(source.fold.ranges, []);
+				source.fold.close(0);
+				a.equal(source.shadowRoot?.querySelector('[part="fold-placeholder"]'), null);
+				a.equal(source.getText(), value);
+			}
+		});
 		it.testElement('replaces only the exact fold range and preserves highlighted suffixes', async (a: TestApi) => {
-			const value = 'invoke(\n  () => { hidden(); }\n).next(42);';
+			const value = 'invoke({\n  run: () => { hidden(); }\n}).next(42);';
 			const { source } = await createSourceEditor(a, value);
 			source.mode = 'javascript';
 			source.tokenColors = { number: '#123456', punctuation: '#654321', identifier: '#abcdef' };
 			await a.sleep(80);
 			const range = source.fold.range(0);
 			a.assert(range);
-			a.equal(range.start, value.indexOf('(') + 1);
-			a.equal(range.end, value.indexOf(').next'));
+			a.equal(range.start, value.indexOf('{') + 1);
+			a.equal(range.end, value.indexOf('}).next'));
 			const context = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="text"]')?.getContext('2d');
 			a.assert(context);
 			const painted: { text: string; color: string | CanvasGradient | CanvasPattern }[] = [];
@@ -2289,9 +2301,9 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 			try {
 				source.fold.close(0);
 				await a.sleep(40);
-				a.equal(painted.map(call => call.text).join(''), 'invoke(…).next(42);', 'canvas preserves the matched tokens and highlighted suffix');
-				a.ok(painted.some(call => call.text === '(' && call.color === '#654321'), 'opening token keeps punctuation highlighting');
-				a.ok(painted.some(call => call.text === ')' && call.color === '#654321'), 'closing token keeps punctuation highlighting');
+				a.equal(painted.map(call => call.text).join(''), 'invoke({…}).next(42);', 'canvas preserves the matched tokens and highlighted suffix');
+				a.ok(painted.some(call => call.text === '{' && call.color === '#654321'), 'opening token keeps punctuation highlighting');
+				a.ok(painted.some(call => call.text === '}' && call.color === '#654321'), 'closing token keeps punctuation highlighting');
 				a.ok(painted.some(call => call.text === '42' && call.color === '#123456'), 'suffix keeps number highlighting');
 				a.ok(painted.some(call => call.text === 'next' && call.color === '#abcdef'), 'suffix keeps identifier highlighting');
 				a.equal(source.getText(), value);
@@ -2332,7 +2344,7 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 			for (const [value, expected] of [
 				['invoke([{\n  hidden\n}]);', '…'],
 				['invoke(() => {\n  if (ready) {\n    hidden\n  }});', '…'],
-				['invoke(\n  () => {\n    hidden\n  });', '…'],
+				['invoke({\n  run: () => {\n    hidden\n  }});', '…'],
 			] as const) {
 				const { source } = await createSourceEditor(a, value);
 				source.mode = 'javascript';
@@ -2344,7 +2356,7 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 			}
 		});
 		it.testElement('paints wrapped folded content once per frame', async (a: TestApi) => {
-			const { source } = await createSourceEditor(a, 'invoke(\n  hidden\n).next(42);');
+			const { source } = await createSourceEditor(a, 'invoke({\n  hidden\n}).next(42);');
 			source.mode = 'javascript';
 			source.style.width = '80px';
 			await a.sleep(80);
@@ -2360,7 +2372,7 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 				source.fold.close(0);
 				await a.sleep(40);
 				a.ok(frames.length > 0);
-				for (const frame of frames) a.equal(frame.join(''), 'invoke(…).next(42);', 'each frame paints every visible character once');
+				for (const frame of frames) a.equal(frame.join(''), 'invoke({…}).next(42);', 'each frame paints every visible character once');
 			} finally {
 				context.fillText = fillText;
 				context.clearRect = clearRect;
@@ -2391,7 +2403,7 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 			}
 		});
 		it.testElement('keeps suffix interactions and decorations in document coordinates', async (a: TestApi) => {
-			const value = 'invoke(\n  hidden\n).next(42);';
+			const value = 'invoke({\n  hidden\n}).next(42);';
 			const { source } = await createSourceEditor(a, value);
 			source.mode = 'javascript';
 			await a.sleep(80);
@@ -2403,7 +2415,7 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 			a.assert(canvas && context && marker);
 			const bounds = marker.getBoundingClientRect();
 			const number = value.indexOf('42');
-			const x = canvas.getBoundingClientRect().left + context.measureText('invoke(…).next(').width + context.measureText('4').width / 4;
+			const x = canvas.getBoundingClientRect().left + context.measureText('invoke({…}).next(').width + context.measureText('4').width / 4;
 			source.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true, button: 0, pointerId: 1, clientX: x, clientY: bounds.top + bounds.height / 2 }));
 			source.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true, pointerId: 1 }));
 			a.equal(source.cursor.index, number, 'suffix pointer hit maps to its original offset');
@@ -2430,7 +2442,7 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 			decorations.dispose();
 		});
 		it.testElement('projects consecutive folded ranges and preserves their intervening text', async (a: TestApi) => {
-			const value = 'one(\n  first\n) + two(\n  second\n).next(42);';
+			const value = 'one({\n  first\n}) + two({\n  second\n}).next(42);';
 			const { source } = await createSourceEditor(a, value);
 			source.mode = 'javascript';
 			await a.sleep(80);
@@ -2445,7 +2457,7 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 				source.fold.close(0);
 				source.fold.close(2);
 				await a.sleep(40);
-				a.equal(painted.join(''), 'one(…) + two(…).next(42);');
+				a.equal(painted.join(''), 'one({…}) + two({…}).next(42);');
 				a.equal(source.shadowRoot?.querySelectorAll('[part="fold-placeholder"]').length, 2);
 				a.equal(source.getText(), value);
 				source.fold.open(0);
@@ -2575,7 +2587,7 @@ for (const element of document.querySelectorAll('c-source')) element.setText(ele
 							this.tokenColors = { identifier: state === 'dark' ? '#eeeeee' : '#111111', punctuation: state === 'dark' ? '#ffccbc' : '#1976d2', number: '#e64a19' };
 							if (state === 'multiple') {
 								this.mode = 'javascript';
-								this.setText('one(\n  first\n) + two(\n  second\n).next(42);');
+								this.setText('one({\n  first\n}) + two({\n  second\n}).next(42);');
 							} else {
 								this.highlighter = function* (source) {
 									yield { source, start: source.indexOf('BEGIN'), end: source.indexOf('BEGIN') + 5, line: 0, kind: 'keyword', foldStart: 1 };
