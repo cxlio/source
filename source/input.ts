@@ -13,6 +13,8 @@ export interface TextInput {
 	readonly element: HTMLElement;
 	readonly kind: 'edit-context' | 'textarea';
 	readonly updates: Observable<TextInputUpdate>;
+	connect(): void;
+	dispose(): void;
 	focus(): void;
 	setBounds(rect: DOMRect): void;
 	sync(text: string, selectionStart: number, selectionEnd: number, offset: number): void;
@@ -137,6 +139,11 @@ function createEditContextInput(
 		clipboardElement,
 		element: host,
 		kind: 'edit-context',
+		connect() { host.editContext = context; container.append(clipboardElement); },
+		dispose() {
+			if (host.editContext === context) host.editContext = null;
+			clipboardElement.remove();
+		},
 		updates: editContextUpdates(context).map(event => {
 			text =
 				text.slice(0, event.start) +
@@ -186,6 +193,8 @@ export function createTextareaInput(container: HTMLElement): TextInput {
 		clipboardElement: element,
 		element,
 		kind: 'textarea',
+		connect: () => container.append(element),
+		dispose: () => element.remove(),
 		updates: textareaUpdates(element, () => {
 			const nextText = element.value;
 			let start = 0;

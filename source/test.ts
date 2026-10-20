@@ -567,6 +567,252 @@ export default spec('@cxl/ui.source', a => {
 			a.equalValues(snapshot.positionAt(3), { line: 1, ch: 0 });
 		});
 	});
+	a.test('public input', it => {
+		it.testElement('handles composed shadow clipboard events once', async (a: TestApi) => {
+			const { source } = await createSourceEditor(a, 'ab');
+			const clipboard = source.shadowRoot?.querySelector('textarea');
+			a.assert(clipboard);
+			source.selection.set(1);
+			const data = new DataTransfer();
+			data.setData('text/plain', 'X');
+			clipboard.dispatchEvent(new ClipboardEvent('paste', {
+				bubbles: true, composed: true, cancelable: true, clipboardData: data,
+			}));
+			a.equal(source.getText(), 'aXb');
+			source.history.undo();
+			a.equal(source.getText(), 'ab');
+			source.history.redo();
+			source.selection.set(1, 2);
+			clipboard.dispatchEvent(new ClipboardEvent('cut', {
+				bubbles: true, composed: true, cancelable: true, clipboardData: data,
+			}));
+			a.equal(data.getData('text/plain'), 'X');
+			a.equal(source.getText(), 'ab');
+			source.history.undo();
+			a.equal(source.getText(), 'aXb');
+		});
+
+		it.should('accepts IDE string and UTF-8 ArrayBuffer insertion interchangeably', a => {
+			const source = a.element(Source);
+			const input: { insert(value: string | ArrayBuffer): void } = source.input;
+			source.setText('ab');
+			source.selection.set(1);
+			input.insert(new TextEncoder().encode('日😀').buffer);
+			a.equal(source.getText(), 'a日😀b');
+			source.history.undo();
+			a.equal(source.getText(), 'ab');
+			source.history.redo();
+			a.equal(source.getText(), 'a日😀b');
+			source.input.disable();
+			input.insert(new TextEncoder().encode('blocked').buffer);
+			a.equal(source.getText(), 'a日😀b');
+			source.input.enable();
+			input.insert(new Uint8Array([0xff]).buffer);
+			a.equal(source.getText(), 'a日😀�b');
+			input.insert(new ArrayBuffer(0));
+			source.history.undo();
+			a.equal(source.getText(), 'a日😀b');
+		});
+
+		it.should('gates every command without affecting programmatic edits or redo', a => {
+			const source = a.element(Source);
+			source.setText('abc');
+			source.selection.set(1);
+			source.input.insert('X');
+			source.history.undo();
+			let changes = 0;
+			const subscription = source.changes.subscribe(() => changes++);
+			for (let cycle = 0; cycle < 2; cycle++) {
+				source.input.disable();
+				source.input.disable();
+				a.equal(source.input.enabled, false);
+				source.input.insert('Z');
+				source.input.backspace();
+				source.input.del();
+				source.input.enter();
+				source.input.tab();
+				a.equal(source.getText(), 'abc');
+				a.equal(changes, 0);
+				source.input.enable();
+				source.input.enable();
+				a.equal(source.input.enabled, true);
+			}
+			source.history.redo();
+			a.equal(source.getText(), 'aXbc');
+			source.input.disable();
+			source.edit.replace('Y');
+			a.equal(source.getText(), 'aXYbc');
+			subscription.unsubscribe();
+		});
+
+		it.should('deletes code points, CRLF and selections with atomic history', a => {
+			const source = a.element(Source);
+			for (const value of ['', 'a', '😀', '\r\n', '日']) {
+				for (const direction of ['backspace', 'del'] as const) {
+					source.setText(value);
+					source.selection.set(direction === 'backspace' ? value.length : 0);
+					source.input[direction]();
+					a.equal(source.getText(), '');
+					source.history.undo();
+					a.equal(source.getText(), value);
+					source.history.redo();
+					a.equal(source.getText(), '');
+				}
+			}
+			source.setText('a😀b\r\nc');
+			source.selection.set(3);
+			source.selection.add({ start: 6, end: 6 });
+			source.input.backspace();
+			a.equal(source.getText(), 'abc');
+			source.history.undo();
+			a.equal(source.getText(), 'a😀b\r\nc');
+			source.selection.set(3, 1);
+			source.input.del();
+			a.equal(source.getText(), 'ab\r\nc');
+		});
+
+		it.should('configures Enter and Tab separately for each normalized range', a => {
+			const source = a.element(Source);
+			source.setText('  a\n\tb');
+			source.selection.set(3);
+			source.selection.add({ start: 6, end: 6 });
+			source.input.enter();
+			a.equal(source.getText(), '  a\n  \n\tb\n\t');
+			source.history.undo();
+			a.equal(source.getText(), '  a\n\tb');
+			source.history.redo();
+			a.equal(source.getText(), '  a\n  \n\tb\n\t');
+			source.setText('a\nbb');
+			source.selection.set(1);
+			source.selection.add({ start: 4, end: 4 });
+			source.indentWithTabs = false;
+			source.tabSize = 4;
+			source.input.tab();
+			a.equal(source.getText(), 'a   \nbb  ');
+			source.history.undo();
+			a.equal(source.getText(), 'a\nbb');
+			source.input.insert('Z');
+			source.history.redo();
+			a.equal(source.getText(), 'aZ\nbbZ');
+			for (const size of [0, -1, 1.5, NaN, Infinity, 257]) {
+				source.setText('');
+				source.tabSize = size;
+				source.input.tab();
+				a.equal(source.getText(), '    ');
+			}
+			source.setText('');
+			source.indentWithTabs = true;
+			source.input.tab();
+			a.equal(source.getText(), '\t');
+		});
+
+		it.should('keeps no-op commands out of changes and history', a => {
+			const source = a.element(Source);
+			source.setText('a');
+			source.selection.set(1);
+			source.input.insert('b');
+			source.history.undo();
+			let changes = 0;
+			const subscription = source.changes.subscribe(() => changes++);
+			source.input.insert('');
+			source.input.del();
+			source.selection.set(0);
+			source.input.backspace();
+			source.selection.set(0, 1);
+			source.input.insert('a');
+			a.equal(changes, 0);
+			source.history.redo();
+			a.equal(source.getText(), 'ab');
+			subscription.unsubscribe();
+		});
+
+		for (const backend of ['edit-context', 'textarea'] as const) {
+			it.testElement(`gates and resynchronizes native ${backend} input across reconnects`, async (a: TestApi) => {
+				const descriptor = Object.getOwnPropertyDescriptor(window, 'EditContext');
+				if (backend === 'textarea') Object.defineProperty(window, 'EditContext', { configurable: true, value: undefined });
+				try {
+					const { source, target } = await createSourceEditor(a, 'ab');
+					source.selection.set(1);
+					const update = (text: string) => {
+						if (source.editContext) source.editContext.dispatchEvent(new TextUpdateEvent('textupdate', {
+							text, updateRangeStart: 1, updateRangeEnd: 1,
+							selectionStart: 1 + text.length, selectionEnd: 1 + text.length,
+						}));
+						else {
+							const textarea = source.shadowRoot?.querySelector('textarea');
+							a.assert(textarea);
+							textarea.value = `a${text}b`;
+							textarea.setSelectionRange(1 + text.length, 1 + text.length);
+							textarea.dispatchEvent(new InputEvent('input', { inputType: 'insertCompositionText', isComposing: true, data: text }));
+						}
+					};
+					source.input.disable();
+					a.equal(target.getAttribute('aria-readonly'), 'true');
+					await a.a11y(source);
+					update('日');
+					update('日本');
+					a.equal(source.getText(), 'ab');
+					source.selection.set(0, 2);
+					a.equal(clipboardSelection(target), 'ab');
+					a.equal(clipboardSelection(target, 'cut'), 'ab');
+					const clipboard = new DataTransfer();
+					clipboard.setData('text/plain', 'X');
+					target.dispatchEvent(new ClipboardEvent('paste', { cancelable: true, clipboardData: clipboard }));
+					for (const key of ['Enter', 'Tab', 'Backspace', 'Delete']) target.dispatchEvent(new KeyboardEvent('keydown', { key, cancelable: true }));
+					a.equal(source.getText(), 'ab');
+					target.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', cancelable: true }));
+					a.equal(source.cursor.index, 2);
+					source.selection.set(1);
+					source.input.enable();
+					a.equal(target.getAttribute('aria-readonly'), 'false');
+					update('日');
+					a.equal(source.getText(), 'a日b');
+					source.history.undo();
+					a.equal(source.getText(), 'ab');
+					for (const modifier of ['ctrlKey', 'altKey', 'metaKey'] as const) {
+						for (const key of ['Backspace', 'Delete']) {
+							const event = new KeyboardEvent('keydown', { key, [modifier]: true, cancelable: true });
+							target.dispatchEvent(event);
+							a.equal(event.defaultPrevented, false);
+							a.equal(source.getText(), 'ab');
+						}
+					}
+					source.selection.set(1);
+					source.indentWithTabs = false;
+					source.tabSize = 2;
+					target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', cancelable: true }));
+					a.equal(source.getText(), 'a b');
+					target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', cancelable: true }));
+					a.equal(source.getText(), 'a \nb');
+					target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', cancelable: true }));
+					a.equal(source.getText(), 'a b');
+					target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', cancelable: true }));
+					a.equal(source.getText(), 'a ');
+					target.dispatchEvent(new ClipboardEvent('paste', { cancelable: true, clipboardData: clipboard }));
+					a.equal(source.getText(), 'a X');
+					source.selection.set(0, 3);
+					a.equal(clipboardSelection(target, 'cut'), 'a X');
+					a.equal(source.getText(), '');
+					source.setText('ab');
+					const parent = source.parentElement;
+					a.assert(parent);
+					source.remove();
+					parent.append(source);
+					await a.sleep(75);
+					a.equal(source.shadowRoot?.querySelectorAll('textarea').length, 1);
+					source.selection.set(1);
+					update('Z');
+					a.equal(source.getText(), 'aZb');
+					source.history.undo();
+					a.equal(source.getText(), 'ab');
+				} finally {
+					if (descriptor) Object.defineProperty(window, 'EditContext', descriptor);
+					else Reflect.deleteProperty(window, 'EditContext');
+				}
+			});
+		}
+	});
+
 	a.test('geometry', it => {
 		it.testElement('exposes viewport anchors and wrapped tab fragments without side effects', async (a: TestApi) => {
 			const value = `a\tb ${'wrapped '.repeat(18)}\nlast`;

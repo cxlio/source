@@ -1,5 +1,6 @@
 import {
 	EMPTY,
+	observable,
 	on,
 	onResize,
 	focused,
@@ -92,6 +93,17 @@ export interface SourceSelectionFeature {
 	end(): void;
 	clear(): void;
 	somethingSelected(): boolean;
+}
+
+export interface SourceInputFeature {
+	readonly enabled: boolean;
+	enable(): void;
+	disable(): void;
+	insert(value: string | ArrayBuffer): void;
+	backspace(): void;
+	del(): void;
+	enter(): void;
+	tab(): void;
 }
 
 export interface SourceEditFeature {
@@ -255,6 +267,8 @@ function selectionRange({ anchor, head }: SourceSelection): SourceRange {
  */
 export class Source extends Code {
 	fatCursor = false;
+	tabSize = 4;
+	indentWithTabs = true;
 	gutters: readonly SourceGutter[] = [];
 	readonly changes: Observable<SourceChange>;
 	readonly token: SourceTokenFeature = {
@@ -398,6 +412,36 @@ export class Source extends Code {
 				? this.applyEdit(value, range)
 				: this.applySelectionEdit(value),
 	};
+	readonly input: SourceInputFeature = (() => {
+		const source = this;
+		return {
+			get enabled() { return source.inputEnabled; },
+			enable: () => { this.inputEnabled = true; this.selectionSync?.(false); },
+			disable: () => { this.inputEnabled = false; this.selectionSync?.(false); },
+			insert: value => {
+				if (!this.input.enabled) return;
+				const text = typeof value === 'string' ? value : new TextDecoder().decode(value);
+				this.applyInput(() => text);
+			},
+			backspace: () => this.deleteInput(-1),
+			del: () => this.deleteInput(1),
+			enter: () => this.applyInput(range => {
+				const position = this.buffer.positionAt(range.start);
+				const prefix = this.buffer.getLine(position.line).slice(0, position.ch);
+				return '\n' + (prefix.match(/^[\t ]*/)?.[0] ?? '');
+			}),
+			tab: () => this.applyInput(range => {
+				if (this.indentWithTabs) return '\t';
+				const size = Number.isInteger(this.tabSize) && this.tabSize > 0 && this.tabSize <= 256
+					? this.tabSize : 4;
+				const position = this.buffer.positionAt(range.start);
+				const prefix = this.buffer.getLine(position.line).slice(0, position.ch);
+				let column = 0;
+				for (const character of prefix) column += character === '\t' ? size - column % size : 1;
+				return ' '.repeat(size - column % size);
+			}),
+		};
+	})();
 	readonly checkpoint: SourceCheckpointFeature = {
 		mark: () => this.buffer.mark(),
 		dirty: () => this.buffer.dirty(),
@@ -566,11 +610,12 @@ export class Source extends Code {
 	};
 	protected readonly undoRecords: HistoryRecord[] = [];
 	protected undoSize = 0;
+	private inputEnabled = true;
 
 	static {
 		component(Source, {
 			tagName: 'c-source',
-			init: [property('fatCursor'), property('gutters')],
+			init: [property('tabSize'), property('indentWithTabs'), property('fatCursor'), property('gutters')],
 			augment: [
 				css(`
 :host {
@@ -653,7 +698,15 @@ canvas {
 					const cursor = sourceCursor(host);
 					const hitTest = $.hitTest;
 					const input = createTextInput($, host);
-					const paste = on(input.element, 'paste');
+					const paste = input.element === input.clipboardElement
+						? on(input.element, 'paste')
+						: merge(on(input.clipboardElement, 'paste'), on(input.element, 'paste').filter(event => event.composedPath()[0] === input.element));
+					const copy = input.element === input.clipboardElement
+						? on(input.element, 'copy')
+						: merge(on(input.clipboardElement, 'copy'), on(input.element, 'copy').filter(event => event.composedPath()[0] === input.element));
+					const cut = input.element === input.clipboardElement
+						? on(input.element, 'cut')
+						: merge(on(input.clipboardElement, 'cut'), on(input.element, 'cut').filter(event => event.composedPath()[0] === input.element));
 					const contextRadius = 2048;
 
 					let inputEnd = 0;
@@ -672,6 +725,7 @@ canvas {
 						$.setAttribute('aria-label', 'Source editor');
 
 					function syncInput() {
+						input.element.setAttribute('aria-readonly', String(!$.input.enabled));
 						const { selectionAnchor: anchor, selectionHead: head } = $;
 						if (
 							!inputEnd ||
@@ -752,10 +806,6 @@ canvas {
 						);
 					}
 
-					function replaceSelection(value: string) {
-						$.edit.replace(value);
-					}
-
 					function normalizeInput(update: TextInputUpdate) {
 						return update.start === $.selectionHead - 1 && /^\. ?$/.test(update.text)
 							? { ...update, text: update.text.replace('.', ' ') }
@@ -778,13 +828,17 @@ canvas {
 					}
 
 					function insertKey(event: KeyboardEvent) {
-						const value: string | undefined = {
-							Enter: '\n',
-							Tab: '\t',
+						if (event.isComposing || ((event.key === 'Backspace' || event.key === 'Delete') &&
+							(event.ctrlKey || event.altKey || event.metaKey))) return false;
+						const command = {
+							Enter: $.input.enter,
+							Tab: $.input.tab,
+							Backspace: $.input.backspace,
+							Delete: $.input.del,
 						}[event.key];
-						if (value === undefined) return false;
+						if (!command) return false;
 						event.preventDefault();
-						replaceSelection(value);
+						command();
 						return true;
 					}
 
@@ -932,6 +986,11 @@ canvas {
 					resetEditor();
 
 					return merge(
+						observable<void>(subscriber => {
+							input.connect();
+							syncInput();
+							subscriber.signal.subscribe(() => input.dispose());
+						}),
 						onResize(host).raf(() => cursor.resize()),
 						focused($).tap(value =>
 							value ? renderSelection() : cursor.hideCaret(),
@@ -941,9 +1000,15 @@ canvas {
 							renderSelection();
 						}),
 						input.updates.tap(update => {
+							if (!$.input.enabled) { syncInput(); return; }
 							update = normalizeInput(update);
+							if (![update.start, update.end, update.selectionStart, update.selectionEnd].every(Number.isInteger) ||
+								update.start < 0 || update.end < update.start || update.end > buffer.length) {
+								syncInput();
+								return;
+							}
 							$.applySelectionEdit(
-								update.text,
+								() => update.text,
 								{ start: update.start, end: update.end },
 								{
 									anchor: update.selectionStart,
@@ -951,21 +1016,23 @@ canvas {
 								},
 								true,
 							);
+							syncInput();
 						}),
 						on(input.element, 'keydown').tap(moveKey),
-						on(input.element, 'copy').tap(event => {
+						copy.tap(event => {
 							copySelection(event);
 							restoreClipboardFocus();
 						}),
-						on(input.element, 'cut').tap(event => {
-							if (copySelection(event)) replaceSelection('');
+						cut.tap(event => {
+							event.preventDefault();
+							if (copySelection(event)) $.input.insert('');
 							restoreClipboardFocus();
 						}),
 						paste.tap(event => {
 							const value = event.clipboardData?.getData('text/plain');
 							if (value === undefined) return;
 							event.preventDefault();
-							replaceSelection(value);
+							$.input.insert(value);
 							restoreClipboardFocus();
 						}),
 						on($, 'pointerdown').tap(event => {
@@ -1198,18 +1265,21 @@ canvas {
 		return change;
 	}
 
+	protected applySelectionEdit(value: string, activeRange?: SourceRange, activeAfter?: SourceSelection, coalesce?: boolean): SourceChange;
+	protected applySelectionEdit(value: (range: SourceRange) => string, activeRange?: SourceRange, activeAfter?: SourceSelection, coalesce?: boolean, rangeFor?: (selection: SourceSelection) => SourceRange): SourceChange | undefined;
 	protected applySelectionEdit(
-		value: string,
+		value: string | ((range: SourceRange) => string),
 		activeRange?: SourceRange,
 		activeAfter?: SourceSelection,
 		coalesce = false,
+		rangeFor?: (selection: SourceSelection) => SourceRange,
 	) {
 		const before = this.selectionSnapshot();
 		const activeIndex = before.length - 1;
 		const active = before[activeIndex] ?? DefaultSelection;
 		const activeHead = active.head;
 		const entries = before.map((selection, index) => {
-			let range = selectionRange(selection);
+			let range = rangeFor?.(selection) ?? selectionRange(selection);
 			if (activeRange && index === activeIndex) range = activeRange;
 			else if (
 				activeRange &&
@@ -1252,11 +1322,14 @@ canvas {
 		let activeChange: SourceChange | undefined;
 		groups.reverse();
 		for (const group of groups) {
-			const change = this.replace(group.range.start, group.range.end, value);
+			const text = typeof value === 'string' ? value : value(group.range);
+			if (typeof value !== 'string' && text.length === group.range.end - group.range.start &&
+				this.buffer.getText(group.range.start, group.range.end) === text) continue;
+			const change = this.replace(group.range.start, group.range.end, text);
 			changes.push(change);
 			for (const [index, selection] of selections.entries())
 				selections[index] = this.mapSelection(selection, change);
-			const next = change.start + value.length;
+			const next = change.start + text.length;
 			for (const index of group.indexes) {
 				selections[index] =
 					index === activeIndex && activeAfter
@@ -1266,6 +1339,7 @@ canvas {
 			}
 			this.changeSubject.next(change);
 		}
+		if (!changes.length) return undefined;
 		this.blockAnchor = undefined;
 		this.setSelectionsState(selections, false);
 		this.recordHistory(
@@ -1758,6 +1832,27 @@ canvas {
 		if (this.searchHighlight)
 			this.highlightSearch(this.searchHighlight.query, this.searchHighlight);
 		this.setSelectionsState(this.selectionSnapshot(), false);
+	}
+
+	private applyInput(value: (range: SourceRange) => string, range?: (selection: SourceSelection) => SourceRange) {
+		if (this.input.enabled) this.applySelectionEdit(value, undefined, undefined, false, range);
+	}
+
+	private deleteInput(direction: -1 | 1) {
+		this.applyInput(() => '', selection => {
+			const range = selectionRange(selection);
+			if (range.start !== range.end) return range;
+			const index = range.start;
+			const start = direction < 0 ? Math.max(0, index - 2) : index;
+			const end = direction < 0 ? index : Math.min(this.buffer.length, index + 2);
+			const text = this.buffer.getText(start, end);
+			const pair = text === '\r\n' || (text.length === 2 &&
+				text.charCodeAt(0) >= 0xd800 && text.charCodeAt(0) <= 0xdbff &&
+				text.charCodeAt(1) >= 0xdc00 && text.charCodeAt(1) <= 0xdfff);
+			return direction < 0
+				? { start: Math.max(0, index - (pair ? 2 : 1)), end: index }
+				: { start: index, end: Math.min(this.buffer.length, index + (pair ? 2 : 1)) };
+		});
 	}
 
 	private renderFoldedLine(line: number, spans: readonly SourceFoldSpan[]) {
