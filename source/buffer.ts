@@ -124,6 +124,42 @@ export class Buffer {
 		return this.#source(piece).charAt(piece.start + offset);
 	}
 
+	wordRange(index: number) {
+		index = this.#clampIndex(index);
+		const line = this.positionAt(index).line;
+		const [lineStart, lineEnd] = this.#lineBounds(line);
+		index = Math.min(index, lineEnd);
+		if (lineStart === lineEnd) return { start: lineStart, end: lineEnd };
+		if (this.#codePointStart(index) < index) index++;
+		const sample = this.getText(
+			index > lineStart ? this.#codePointStart(index - 1) : index,
+			index > lineStart ? index : Math.min(lineEnd, index + 2),
+		);
+		const character = String.fromCodePoint(sample.codePointAt(0) ?? 0);
+		const run = /[\p{L}\p{N}\p{M}_$]/u.test(character)
+			? /[\p{L}\p{N}\p{M}_$]+/u
+			: /\s/u.test(character)
+				? /\s+/u
+				: /[^\p{L}\p{N}\p{M}_$\s]+/u;
+		const suffix = new RegExp(`${run.source}$`, 'u');
+		const prefix = new RegExp(`^${run.source}`, 'u');
+		let start = index;
+		let end = index;
+		while (start > lineStart) {
+			const from = this.#codePointStart(Math.max(lineStart, start - 256));
+			const length = this.getText(from, start).match(suffix)?.[0].length ?? 0;
+			start -= length;
+			if (start !== from) break;
+		}
+		while (end < lineEnd) {
+			const to = this.#codePointStart(Math.min(lineEnd, end + 256));
+			const length = this.getText(end, to).match(prefix)?.[0].length ?? 0;
+			end += length;
+			if (end !== to) break;
+		}
+		return { start, end };
+	}
+
 	positionAt(index: number): BufferPosition {
 		index = this.#clampIndex(index);
 		const line = this.#countLineBreaksBefore(index);
@@ -279,6 +315,13 @@ export class Buffer {
 		if (index === Infinity) return this.length;
 		if (!Number.isFinite(index)) return 0;
 		return Math.max(0, Math.min(Math.trunc(index), this.length));
+	}
+
+	#codePointStart(index: number) {
+		return /[\uDC00-\uDFFF]/u.test(this.charAt(index)) &&
+			/[\uD800-\uDBFF]/u.test(this.charAt(index - 1))
+			? index - 1
+			: index;
 	}
 
 	#clampLine(line: number) {

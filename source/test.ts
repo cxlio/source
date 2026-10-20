@@ -13,6 +13,7 @@ import {
 	type SourceChange,
 	type SourceCheckpointFeature,
 	type SourceDecorationFragment,
+	type SourceTokenFeature,
 } from './index.js';
 import { createTextareaInput } from './input.js';
 import { HitTest } from './hit-test.js';
@@ -197,6 +198,233 @@ async function editorValue(a: TestApi, element: Element) {
 }
 
 export default spec('@cxl/ui.source', a => {
+	a.test('lexical token lookup', it => {
+		it.should('exposes the editor token contract instead of only a range', a => {
+			const source = new Source();
+			source.setText('alpha beta');
+			source.cursor.go(3);
+			const token = source.token.at();
+			a.equalValues({ ...token, getBox: undefined, getStyle: undefined }, {
+				start: 0, end: 5, value: 'alpha', type: 'unknown',
+				cursor: { start: 3, end: 3, value: 'alp' },
+				getBox: undefined, getStyle: undefined,
+			});
+			a.equal(source.token.current.value, undefined);
+		});
+
+		it.should('supports externally published current tokens and observable replay', a => {
+			const source = new Source();
+			source.setText('alpha');
+			const values: (string | ArrayBuffer | undefined)[] = [];
+			source.token.current.next(source.token.at(2));
+			const subscription = source.token.current.subscribe(token => values.push(token?.value));
+			a.equal(source.token.current.value?.value, 'alpha');
+			source.token.current.next(undefined);
+			const binary = new ArrayBuffer(2);
+			source.token.current.next({ start: 0, end: 2, value: binary, type: 'unknown' });
+			a.equalValues(values, ['alpha', undefined, binary]);
+			subscription.unsubscribe();
+		});
+
+		it.should('returns selection text and normalized cursor context without moving the cursor', a => {
+			const source = new Source();
+			source.setText('alpha beta');
+			source.selection.set(8, 2);
+			const token = source.token.at();
+			a.equal(token.type, 'selection');
+			a.equal(token.value, 'pha be');
+			a.equalValues(token.cursor, { start: 2, end: 2, value: '' });
+			a.equalValues(source.selection.range(), { start: 2, end: 8 });
+			a.equal(source.cursor.index, 2);
+			source.selection.set(0);
+			const end = source.token.at(Infinity);
+			a.equal(end.value, 'beta');
+			a.equalValues(end.cursor, { start: 10, end: 10, value: 'beta' });
+			a.equal(source.token.at(NaN).value, 'alpha');
+			source.setText('');
+			a.equal(source.token.at().value, '');
+			a.equalValues(source.token.at().cursor, { start: 0, end: 0, value: '' });
+		});
+
+		it.testElement('preserves syntax precedence and exposes editor geometry and styling callbacks', async (a: TestApi) => {
+			const { source } = await createSourceEditor(a, 'alpha + beta');
+			source.highlighter = function* (text) {
+				yield { source: text, start: 0, end: text.length, line: 0, kind: 'string' };
+			};
+			a.equal(source.token.at(2).type, 'unknown');
+			await a.sleep(40);
+			const token = source.token.at(2);
+			a.equal(token.type, 'string');
+			a.equal(token.value, 'alpha + beta');
+			a.equalValues(token.cursor, { start: 2, end: 2, value: 'al' });
+			const caret = source.geometry.caret(0);
+			a.assert(caret.status === 'visible');
+			a.equalValues(token.getBox?.(), {
+				left: caret.bounds.x, top: caret.bounds.y,
+				right: caret.bounds.x + caret.bounds.width,
+				bottom: caret.bounds.y + caret.bounds.height,
+			});
+			const style = getComputedStyle(source);
+			a.equal(token.getStyle?.(), `font:${style.font};tab-size:${style.tabSize};letter-spacing:${style.letterSpacing}`);
+			source.selection.set(1, 3);
+			a.equal(source.token.at().type, 'selection');
+			a.equal(source.token.at().value, 'alpha + beta');
+			source.selection.set(0);
+			source.highlighter = function* (text) {
+				yield { source: text, start: 0, end: text.length, line: 0, kind: 'custom' };
+			};
+			await a.sleep(40);
+			a.equal(source.token.at(2).type, 'unknown');
+			a.equal(source.token.at(2).value, 'alpha + beta');
+			source.remove();
+			a.equal(token.getBox?.(), undefined);
+		});
+
+		it.should('groups words whitespace and punctuation with left-biased boundaries', a => {
+			const source = new Source();
+			source.setText('alpha_$12 \t+=beta');
+			const token: SourceTokenFeature = source.token;
+			for (const index of [0, 1, 8, 9])
+				a.equalValues(token.wordRange(index), { start: 0, end: 9 });
+			for (const index of [10, 11])
+				a.equalValues(token.wordRange(index), { start: 9, end: 11 });
+			for (const index of [12, 13])
+				a.equalValues(token.wordRange(index), { start: 11, end: 13 });
+			for (const index of [14, 17, Infinity])
+				a.equalValues(token.wordRange(index), { start: 13, end: 17 });
+			for (const index of [-10, -Infinity, NaN, 1.9])
+				a.equalValues(token.wordRange(index), { start: 0, end: 9 });
+		});
+
+		it.should('handles empty documents and never crosses logical line endings', a => {
+			const source = new Source();
+			for (const index of [0, -1, Infinity, NaN])
+				a.equalValues(source.token.wordRange(index), { start: 0, end: 0 });
+			source.setText('one \r\n\r\n \ttwo\n');
+			for (const index of [4, 5])
+				a.equalValues(source.token.wordRange(index), { start: 3, end: 4 });
+			for (const index of [6, 7])
+				a.equalValues(source.token.wordRange(index), { start: 6, end: 6 });
+			for (const index of [8, 9, 10])
+				a.equalValues(source.token.wordRange(index), { start: 8, end: 10 });
+			a.equalValues(source.token.wordRange(13), { start: 10, end: 13 });
+			a.equalValues(source.token.wordRange(Infinity), { start: 14, end: 14 });
+			source.setText('\n\n');
+			for (const index of [0, 1, 2])
+				a.equalValues(source.token.wordRange(index), { start: index, end: index });
+		});
+
+		it.should('keeps Unicode letters marks numbers and surrogate pairs intact', a => {
+			const source = new Source();
+			const word = 'é中e\u0301𝒜١_$';
+			const symbols = '😀💡!?';
+			source.setText(`${word}${symbols} next`);
+			for (let index = 0; index <= word.length; index++)
+				a.equalValues(source.token.wordRange(index), { start: 0, end: word.length });
+			for (let index = word.length + 1; index <= word.length + symbols.length; index++)
+				a.equalValues(source.token.wordRange(index), {
+					start: word.length, end: word.length + symbols.length,
+				});
+			source.setText('x\u00a0\u2003y');
+			a.equalValues(source.token.wordRange(2), { start: 1, end: 3 });
+			source.setText('\uD800!\uDC00');
+			a.equalValues(source.token.wordRange(2), { start: 0, end: 3 });
+		});
+
+		it.should('defaults to the active head and leaves selections and notifications unchanged', a => {
+			const source = new Source();
+			source.setText('alpha beta gamma');
+			source.selection.set(10, 7);
+			source.selection.add({ start: 12, end: 15 });
+			const before = source.selection.ranges();
+			const head = source.cursor.index;
+			let changes = 0;
+			const subscription = source.selection.onChange.subscribe(() => changes++);
+			a.equalValues(source.token.wordRange(), { start: 11, end: 16 });
+			a.equalValues(source.token.wordRange(2), { start: 0, end: 5 });
+			a.equalValues(source.selection.ranges(), before);
+			a.equal(source.cursor.index, head);
+			a.equal(changes, 0);
+			subscription.unsubscribe();
+		});
+
+		it.testElement('works independently of absent pending completed and removed highlighters', async a => {
+			const { source } = await createSourceEditor(a, 'alpha + beta');
+			a.equal(source.getTokenAt(7), undefined);
+			a.equalValues(source.token.wordRange(7), { start: 6, end: 7 });
+			source.highlighter = function* (text) {
+				yield { source: text, start: 0, end: text.length, line: 0, kind: 'string' };
+			};
+			a.equal(source.getTokenAt(7), undefined);
+			a.equalValues(source.token.wordRange(7), { start: 6, end: 7 });
+			await a.sleep(40);
+			a.equal(source.getTokenAt(7)?.kind, 'string');
+			a.equalValues(source.token.wordRange(7), { start: 6, end: 7 });
+			source.cursorToken.goStart();
+			a.equalValues(source.cursorToken.range(), { start: 0, end: 12 });
+			source.highlighter = undefined;
+			a.equal(source.getTokenAt(7), undefined);
+			a.equalValues(source.token.wordRange(7), { start: 6, end: 7 });
+		});
+
+		it.should('tracks edits fragmented runs history and external text replacement', a => {
+			const source = new Source();
+			source.setText('alpha beta');
+			source.edit.replace('Z', { start: 2, end: 3 });
+			a.equalValues(source.token.wordRange(3), { start: 0, end: 5 });
+			source.edit.replace('', { start: 5, end: 6 });
+			a.equalValues(source.token.wordRange(6), { start: 0, end: 9 });
+			source.edit.replace('done', source.token.wordRange(6));
+			a.equal(source.getText(), 'done');
+			a.equalValues(source.token.wordRange(Infinity), { start: 0, end: 4 });
+			source.history.undo();
+			a.equalValues(source.token.wordRange(6), { start: 0, end: 9 });
+			source.history.undo();
+			a.equalValues(source.token.wordRange(7), { start: 6, end: 10 });
+			source.history.redo();
+			a.equalValues(source.token.wordRange(7), { start: 0, end: 9 });
+			source.setText('new\ntext');
+			a.equalValues(source.token.wordRange(Infinity), { start: 4, end: 8 });
+		});
+
+		it.should('finds exact long runs across Unicode chunk edges and edited pieces', a => {
+			const source = new Source();
+			for (const run of ['a'.repeat(10_000), '𝒜'.repeat(600), '😀'.repeat(600), ' \t'.repeat(600)]) {
+				source.setText(`!${run}!`);
+				source.edit.replace(run.slice(300, 302), { start: 301, end: 303 });
+				for (const index of [2, 256, 257, 301, 514, run.length + 1])
+					a.equalValues(source.token.wordRange(index), {
+						start: run.startsWith('😀') ? 0 : 1,
+						end: run.startsWith('😀') ? run.length + 2 : run.length + 1,
+					});
+			}
+		});
+
+		it.should('bounds ordinary buffer lookups to local chunks on a large single line', a => {
+			const reads: number[] = [];
+			let characters = 0;
+			class MeasuredBuffer extends Buffer {
+				override getText(start?: number, end?: number) {
+					reads.push(start === undefined || end === undefined ? Infinity : end - start);
+					return super.getText(start, end);
+				}
+				override charAt(index: number) {
+					characters++;
+					return super.charAt(index);
+				}
+			}
+			const buffer = new MeasuredBuffer();
+			const prefix = 'word '.repeat(100_000);
+			buffer.reset(`${prefix}target suffix`);
+			a.equalValues(buffer.wordRange(prefix.length + 3), {
+				start: prefix.length, end: prefix.length + 6,
+			});
+			a.ok(reads.length <= 3);
+			a.ok(reads.every(length => length <= 257));
+			a.ok(characters <= 12);
+		});
+	});
+
 	a.test('geometry', it => {
 		it.testElement('exposes viewport anchors and wrapped tab fragments without side effects', async (a: TestApi) => {
 			const value = `a\tb ${'wrapped '.repeat(18)}\nlast`;

@@ -16,6 +16,7 @@ import {
 	virtualScroll,
 	ReplaySubject,
 	Subject,
+	BehaviorSubject,
 } from '@cxl/ui';
 import { textCanvas, type SourceTextSpan } from './text.js';
 import { sourceCursor } from './cursor.js';
@@ -95,6 +96,30 @@ export interface SourceSelectionFeature {
 
 export interface SourceEditFeature {
 	replace(value: string, range?: SourceRange): SourceChange;
+}
+
+const TokenTypes = [
+	'keyword', 'operator', 'variable', 'comment', 'tag', 'type', 'attribute',
+	'selection', 'block', 'link', 'cmd', 'error', 'number', 'string', 'property',
+	'unknown', 'regexp', 'dom', 'argument',
+] as const;
+
+export type SourceTokenType = typeof TokenTypes[number];
+
+export interface SourceTokenInfo<T extends string | ArrayBuffer = string | ArrayBuffer> {
+	readonly start: number;
+	readonly end: number;
+	readonly value: T;
+	readonly type: SourceTokenType;
+	cursor?: { start: number; end: number; value: T };
+	getBox?(): { left: number; top: number; right: number; bottom: number } | undefined;
+	getStyle?(): string;
+}
+
+export interface SourceTokenFeature {
+	readonly current: BehaviorSubject<SourceTokenInfo | undefined>;
+	at(index?: number): SourceTokenInfo<string>;
+	wordRange(index?: number): SourceRange;
 }
 
 export interface SourceCursorNavigationFeature {
@@ -232,6 +257,11 @@ export class Source extends Code {
 	fatCursor = false;
 	gutters: readonly SourceGutter[] = [];
 	readonly changes: Observable<SourceChange>;
+	readonly token: SourceTokenFeature = {
+		current: new BehaviorSubject<SourceTokenInfo | undefined>(undefined),
+		at: (index = this.selectionHead) => this.tokenAt(index),
+		wordRange: (index = this.selectionHead) => this.buffer.wordRange(index),
+	};
 	readonly cursor: SourceCursorFeature = (() => {
 		const source = this;
 		return {
@@ -1073,6 +1103,30 @@ canvas {
 		const lines = Math.max(1, Math.floor(this.clientHeight / lineHeight));
 		const next = this.folding.indexAt(this.folding.lineAt(this.folding.rowAt(position.line) + direction * lines), this.folding.columnAt(this.selectionHead));
 		this.setSelectionState(next, next, true, true);
+	}
+
+	protected tokenAt(index: number): SourceTokenInfo<string> {
+		index = this.clampSelection(index);
+		const syntax = this.getTokenAt(index);
+		const selected = this.selection.somethingSelected();
+		const { start, end } = syntax ??
+			(selected ? this.selection.range() : this.buffer.wordRange(index));
+		return {
+			start, end,
+			value: this.getText(start, end),
+			type: selected ? 'selection' : TokenTypes.find(type => type === syntax?.kind) ?? 'unknown',
+			cursor: { start: index, end: index, value: this.getText(start, index) },
+			getBox: () => {
+				const caret = this.geometry.caret(start);
+				if (caret.status !== 'visible') return;
+				const { x, y, width, height } = caret.bounds;
+				return { left: x, top: y, right: x + width, bottom: y + height };
+			},
+			getStyle: () => {
+				const style = getComputedStyle(this);
+				return `font:${style.font};tab-size:${style.tabSize};letter-spacing:${style.letterSpacing}`;
+			},
+		};
 	}
 
 	protected tokenIndex() {
