@@ -1,3 +1,4 @@
+import { type Highlighter, type LanguageResolver } from '@cxl/gbc.sdk';
 import { type SourceHighlighter } from './highlight.js';
 
 const modules = {
@@ -11,17 +12,26 @@ const modules = {
 	shell: () => import('@cxl/gbc.cmd/highlight.js'),
 };
 
-type Mode = keyof typeof modules;
-const pending = new Map<Mode, Promise<SourceHighlighter>>();
+const pending = new Map<string, Promise<Highlighter | undefined>>();
+const aliases: Readonly<Record<string, string>> = {
+	js: 'javascript', mjs: 'javascript', cjs: 'javascript', node: 'javascript', ecmascript: 'javascript',
+	ts: 'typescript', md: 'markdown', sh: 'shell', bash: 'shell', cmd: 'shell',
+};
 
 export function loadSourceHighlighter(mode: string): Promise<SourceHighlighter | undefined> {
-	if (mode !== 'javascript' && mode !== 'typescript' && mode !== 'html' &&
-		mode !== 'json' && mode !== 'gb' && mode !== 'markdown' && mode !== 'basic' && mode !== 'shell')
+	if (!Object.hasOwn(modules, mode))
 		return Promise.resolve(undefined);
-	let result = pending.get(mode);
-	if (!result) {
-		result = modules[mode]().then(module => module.highlight);
-		pending.set(mode, result);
+	if (!pending.size) {
+		const languages = new Map<string, Highlighter>();
+		const resolveLanguage: LanguageResolver = language => {
+			const tag = language.toLowerCase();
+			return languages.get(aliases[tag] ?? tag);
+		};
+		const ready = Promise.all(Object.entries(modules).map(async ([name, load]) => {
+			languages.set(name, (await load()).highlight({ resolveLanguage }));
+		}));
+		for (const name of Object.keys(modules))
+			pending.set(name, ready.then(() => languages.get(name)));
 	}
-	return result;
+	return pending.get(mode) ?? Promise.resolve(undefined);
 }

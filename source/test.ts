@@ -19,10 +19,9 @@ import { createTextareaInput } from './input.js';
 import { HitTest } from './hit-test.js';
 import { SourceHighlight } from './highlight.js';
 import { SourceFolding } from './fold.js';
-import { highlight as jsonHighlighter } from '@cxl/gbc.json/highlight.js';
 import { textCanvas, type SourceLine } from './text.js';
 
-function fullScan(highlighter: SourceHighlighter, value: string) {
+function fullScan(highlighter: SourceHighlighter, value: string): Iterable<SourceToken> {
 	return typeof highlighter === 'function' ? highlighter(value) : highlighter.resume({ source: {
 		id: {}, version: 0, length: value.length, read: (start, end) => value.slice(start, end), text: () => value,
 	} });
@@ -435,7 +434,7 @@ export default spec('@cxl/ui.source', a => {
 		const examples = {
 			javascript: 'const value = 1;\n', typescript: 'const value: number = 1;\n',
 			json: '{"value":1},\n', html: '<div>value</div>\n', gb: 'const value = 1\n',
-			markdown: '# Heading\n\nvalue\n\n', basic: 'PRINT 1\n', shell: 'echo value\n',
+			markdown: '# Heading\n\n```js\nconst value = 1;\n```\n\n', basic: 'PRINT 1\n', shell: 'echo value\n',
 		};
 		for (const [mode, unit] of Object.entries(examples)) {
 			const native = await loadSourceHighlighter(mode);
@@ -905,16 +904,16 @@ export default spec('@cxl/ui.source', a => {
 
 		it.should('highlights JSON values and nested fold boundaries', async (a: TestApi) => {
 			const scanner = await loadSourceHighlighter('json');
-			a.equal(scanner, jsonHighlighter);
+			a.assert(scanner);
 			const value = '{\n "items": [\n "hello", -1.5e2, true, false, null\n ]\n}';
-			const tokens = [...fullScan(jsonHighlighter, value)];
+			const tokens = [...fullScan(scanner, value)];
 			a.equalValues(tokens.filter(token => ['string', 'number', 'true', 'false', 'null'].includes(token.kind)).map(highlightKind),
 				['attribute', 'string', 'number', 'literal', 'literal', 'literal']);
 			a.equalValues(tokens.filter(token => token.foldStart).map(token => token.kind), ['{', '[']);
 			a.equalValues(tokens.filter(token => token.foldEnd).map(token => token.kind), [']', '}']);
 			for (const input of [value, '', '{"items": [', '{"value": "open']) {
 				let end = 0;
-				for (const token of fullScan(jsonHighlighter, input)) {
+				for (const token of fullScan(scanner, input)) {
 					a.ok(token.start >= end && token.end >= token.start && token.end <= input.length);
 					a.equal(token.source, input);
 					end = token.end;
@@ -958,15 +957,100 @@ export default spec('@cxl/ui.source', a => {
 			a.equal(tokens[tokens.length - 1]?.line, 5);
 		});
 
+		it.should('highlights embedded Markdown fence languages and preserves positions', async (a: TestApi) => {
+			const scanner = await loadSourceHighlighter('markdown');
+			a.assert(scanner);
+			for (const [tag, body, kind] of [
+				['js', 'const value = 1;', 'keyword'],
+				['mjs', 'const value = 1;', 'keyword'],
+				['cjs', 'const value = 1;', 'keyword'],
+				['typescript', 'interface Value {}', 'keyword'],
+				['ts', 'interface Value {}', 'keyword'],
+				['json', '{"value": true}', 'punctuation'],
+				['html', '<main>value</main>', 'punctuation'],
+				['gb', 'main { value = 1 }', 'keyword'],
+				['basic', 'IF value THEN', 'keyword'],
+				['sh', 'if true; then', 'keyword'],
+				['markdown', '# Nested', 'heading'],
+			] as const) {
+				for (const marker of ['```', '~~~~']) {
+					const value = '# Heading\n\n  ' + marker + tag + ' extra\n' + body + '\n  ' + marker + '\n';
+					const tokens = [...fullScan(scanner, value)];
+					const start = value.indexOf(body);
+					const embedded = tokens.find(token => token.start === start);
+					a.equal(highlightKind(embedded), kind, tag);
+					a.equal(embedded?.line, 3, tag);
+					let end = 0;
+					for (const token of tokens) {
+						a.ok(token.start >= end && token.end > token.start && token.end <= value.length, tag);
+						a.equal(token.source, value);
+						end = token.end;
+					}
+				}
+			}
+			for (const tag of ['', 'unknown', 'text']) {
+				const value = '```' + tag + '\nconst value = 1;\n```';
+				a.equalValues([...fullScan(scanner, value)].map(highlightKind), ['code']);
+			}
+			for (const value of ['```js\nconst value = 1;', '```js\n', '```js\n   ', '```js']) {
+				const tokens = [...fullScan(scanner, value)];
+				a.ok(tokens.every(token => token.start >= 0 && token.end > token.start && token.end <= value.length));
+				if (value.includes('const')) a.ok(tokens.some(token => highlightKind(token) === 'keyword'));
+				if (value.includes('\n')) a.equal(tokens.reduce((sum, token) => sum + (token.foldStart ?? 0) - (token.foldEnd ?? 0), 0), 0);
+			}
+		});
+
+		it.should('recursively highlights Markdown fences and shifts embedded errors', async (a: TestApi) => {
+			const scanner = await loadSourceHighlighter('markdown');
+			a.assert(scanner);
+			const value = '# Heading\n\n````md\n```js\nconst value = 1;\n```\n````';
+			const tokens = [...fullScan(scanner, value)];
+			const keyword = tokens.find(token => highlightKind(token) === 'keyword');
+			a.equal(keyword?.start, value.indexOf('const'));
+			a.equal(keyword?.line, 4);
+			a.equal(keyword?.source, value);
+			const invalid = '# Heading\n\n```json\n{"value": ?}\n```';
+			const errors = [...fullScan(scanner, invalid)].filter(token => token.error);
+			a.ok(errors.length > 0);
+			for (const token of errors) {
+				a.equal(token.error?.position.source, invalid);
+				a.equal(token.error?.position.start, token.start);
+				a.equal(token.error?.position.line, token.line);
+			}
+		});
+
+		it.testElement('renders embedded fences in both components and updates edited bodies', async a => {
+			const value = '```js\nconst value = {\n text: "hello"\n};\n```';
+			const code = await createCode(a, value);
+			const { source } = await createSourceEditor(a, value);
+			code.mode = source.mode = 'markdown';
+			await loadSourceHighlighter('markdown');
+			await a.sleep(40);
+			for (const element of [code, source]) {
+				a.equal(highlightKind(element.getTokenAt(value.indexOf('const') + 1)), 'keyword');
+				a.equal(highlightKind(element.getTokenAt(value.indexOf('hello'))), 'string');
+			}
+			a.equal(source.fold.ranges.length, 2);
+			a.equal(code.shadowRoot?.querySelector('code')?.textContent, value);
+			const start = value.indexOf('"hello"');
+			source.edit.replace('42', { start, end: start + 7 });
+			code.setText(source.getText());
+			await a.sleep(40);
+			for (const element of [code, source])
+				a.equal(highlightKind(element.getTokenAt(start + 1)), 'number');
+		});
+
 		it.should('combines Markdown blocks and inline spans without overlapping ranges', async (a: TestApi) => {
 			const scanner = await loadSourceHighlighter('markdown');
 			a.assert(scanner);
 			const value = '# Heading\n**bold** and `code`\n[label](https://example.test)\n> quote\n\n```js\nconst value = 1;\n```\n';
 			const tokens = [...fullScan(scanner, value)];
 			const code = tokens.filter(token => highlightKind(token) === 'code');
-			a.equal(code.length, 2);
+			a.equal(code.length, 3);
 			a.equal(value.slice(code[0]?.start, code[0]?.end), '`code`');
-			a.equal(value.slice(code[1]?.start, code[1]?.end), '```js\nconst value = 1;\n```');
+			a.equal(value.slice(code[1]?.start, code[1]?.end), '```js\n');
+			a.equal(value.slice(code[2]?.start, code[2]?.end), '```\n');
+			a.ok(tokens.some(token => highlightKind(token) === 'keyword'));
 			a.equal(code[1]?.line, 5);
 			const link = tokens.find(token => highlightKind(token) === 'link');
 			a.assert(link);
@@ -1247,6 +1331,7 @@ export default spec('@cxl/ui.source', a => {
 		const value = 'const value: number = 12;\nconst text = "hello";\n// comment\nconst match = /value/;\nconst template = `value`;\nconst flag = true;';
 		for (const { name, examples, width, height, rowHeight, columns } of [
 			{ name: 'syntax-highlighting', examples: { typescript: value }, width: 320, height: 296, rowHeight: 144, columns: 1 },
+			{ name: 'markdown-fences', examples: { markdown: '# Embedded code\n```mjs\nconst value = 42;\n// highlighted body\n```' }, width: 648, height: 160, rowHeight: 160, columns: 2 },
 			{ name: 'additional-modes', examples: ModeExamples, width: 648, height: 408, rowHeight: 96, columns: 2 },
 			{ name: 'incremental-highlighting', examples: { javascript: 'const value = 1;\n/* note\n * details\n */\nvalue;\n' }, width: 648, height: 160, rowHeight: 160, columns: 2 },
 		]) {
@@ -1256,7 +1341,7 @@ export default spec('@cxl/ui.source', a => {
 <script type="module">
 import { loadSourceHighlighter } from ${JSON.stringify(new URL('./index.js', import.meta.url).href)};
 const examples = ${JSON.stringify(examples)};
-await Promise.all(Object.keys(examples).map(loadSourceHighlighter));
+if (${JSON.stringify(name)} !== 'markdown-fences') await Promise.all(Object.keys(examples).map(loadSourceHighlighter));
 for (const [mode, value] of Object.entries(examples)) for (const tag of ['c-code', 'c-source']) {
  const element = document.createElement(tag);
  element.setAttribute('aria-label', mode + ' source');
