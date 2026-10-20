@@ -48,6 +48,8 @@ function lowerBound(values: readonly number[], value: number) {
 	return low;
 }
 
+export type BufferSnapshot = Pick<Buffer, 'length' | 'getText' | 'positionAt' | 'lineRange'>;
+
 export class Buffer {
 	#table: IndexedPiece[] = [];
 	#addBuffer = '';
@@ -64,6 +66,18 @@ export class Buffer {
 
 	get length() {
 		return this.#lengths.at(-1) ?? 0;
+	}
+
+	snapshot(): BufferSnapshot {
+		const copy = new Buffer();
+		copy.#table = this.#table.map(piece => ({ ...piece }));
+		copy.#original = this.#original;
+		copy.#addBuffer = this.#addBuffer;
+		copy.#originalLineBreaks = this.#originalLineBreaks;
+		copy.#addLineBreaks = this.#addLineBreaks.slice();
+		copy.#lengths = this.#lengths;
+		copy.#lineBreaks = this.#lineBreaks;
+		return copy;
 	}
 
 	mark() {

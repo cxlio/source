@@ -1,4 +1,6 @@
 import { spec, type TestApi } from '@cxl/spec';
+import type { HighlightCheckpoint } from '@cxl/gbc.sdk';
+import type { SourceToken } from './highlight.js';
 import { Buffer } from './buffer.js';
 import { Code } from './code.js';
 import { foldGutter, gutterMarkers, Source } from './index.js';
@@ -13,6 +15,13 @@ const ViewportLineCount = 60;
 const MarkerCount = 10_000;
 const benchmarkOptions = { warmup: 250, sampleTime: 50, samples: 30 };
 const featureBenchmarkOptions = { warmup: 20, sampleTime: 20, samples: 10 };
+
+function checkpoint(iterator: Generator<SourceToken, HighlightCheckpoint<unknown>>) {
+	for (;;) {
+		const next = iterator.next();
+		if (next.done) return next.value;
+	}
+}
 
 function createLargeSource(lineCount = LineCount) {
 	return Array.from(
@@ -36,6 +45,19 @@ function createTextCanvas(a: TestApi, width = 320) {
 
 export default spec('Source line rendering benchmarks', async s => {
 	await Promise.all(['javascript', 'gb', 'markdown', 'basic', 'shell'].map(loadSourceHighlighter));
+	s.test('javascript checkpoint resume and convergence', async (a: TestApi) => {
+		const highlighter = await loadSourceHighlighter('javascript');
+		a.assert(highlighter && typeof highlighter !== 'function');
+		const value = 'const value = 1;\n'.repeat(3000);
+		const source = { id: {}, version: 0, length: value.length, read: (start: number, end: number) => value.slice(start, end), text: () => value };
+		const prefix = checkpoint(highlighter.resume({ source, end: 4096 }));
+		const old = checkpoint(highlighter.resume({ source, end: 8192 }, prefix));
+		const edited = value.slice(0, 6000) + 'x' + value.slice(6001);
+		const changed = { ...source, version: 1, read: (start: number, end: number) => edited.slice(start, end), text: () => edited };
+		const restart = highlighter.rebase(prefix, changed, 0, 0);
+		a.equal(highlighter.equivalent(checkpoint(highlighter.resume({ source: changed, end: 8192 }, restart)), old), true);
+		await a.benchmark(() => highlighter.equivalent(checkpoint(highlighter.resume({ source: changed, end: 8192 }, restart)), old), benchmarkOptions);
+	});
 	s.test('large-document html', async a => {
 		const code = a.element(Code);
 		const source = createLargeSource(HtmlLineCount);
@@ -262,7 +284,7 @@ export default spec('Source line rendering benchmarks', async s => {
 			const source = Array(200).fill(value).join('\n');
 			await a.benchmark(() => {
 				let count = 0;
-				for (const token of scanner(source)) if (token.end > token.start) count++;
+				for (const token of (typeof scanner === 'function' ? scanner(source) : scanner.resume({ source: { id: {}, version: 0, length: source.length, read: (start, end) => source.slice(start, end), text: () => source } }))) if (token.end > token.start) count++;
 				return count;
 			}, benchmarkOptions);
 		});

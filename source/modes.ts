@@ -1,14 +1,14 @@
 import { type SourceHighlighter } from './highlight.js';
 
 const modules = {
-	javascript: () => import('./javascript.js'),
-	typescript: () => import('./typescript.js'),
-	html: () => import('./html.js'),
-	json: () => import('./json.js'),
-	gb: () => import('./gb.js'),
-	markdown: () => import('./markdown.js'),
-	basic: () => import('./basic.js'),
-	shell: () => import('./shell.js'),
+	javascript: () => import('@cxl/gbc.javascript/highlight.js'),
+	typescript: () => import('@cxl/gbc.typescript/highlight.js'),
+	html: () => import('@cxl/gbc.html/highlight.js'),
+	json: () => import('@cxl/gbc.json/highlight.js'),
+	gb: () => import('@cxl/gbc.compiler/highlight.js'),
+	markdown: () => import('@cxl/gbc.markdown/highlight.js'),
+	basic: () => import('@cxl/gbc.basic/highlight.js'),
+	shell: () => import('@cxl/gbc.cmd/highlight.js'),
 };
 
 type Mode = keyof typeof modules;
@@ -20,7 +20,7 @@ export function loadSourceHighlighter(mode: string): Promise<SourceHighlighter |
 		return Promise.resolve(undefined);
 	let result = pending.get(mode);
 	if (!result) {
-		result = modules[mode]().then(module => module.default);
+		result = modules[mode]().then(module => module.highlight);
 		pending.set(mode, result);
 	}
 	return result;

@@ -73,7 +73,7 @@ code { font: inherit; }
 					const renderer = $.initializeRenderer();
 					$.initialized = true;
 					$.resetRenderer();
-					$.highlight.reset(() => $.buffer.getText(), $.activeHighlighter);
+					$.highlight.reset($.buffer, $.activeHighlighter);
 					$.setAttribute('role', 'code');
 
 					return merge(
@@ -172,12 +172,7 @@ code { font: inherit; }
 		this.explicitText = true;
 		const change = this.buffer.replace(start, end, value);
 		this.replaced(change);
-		this.highlight.reset(
-			() => this.buffer.getText(),
-			this.activeHighlighter,
-			change.start,
-			change.lineStart,
-		);
+		this.highlight.replace(this.buffer, change, this.activeHighlighter);
 		return change;
 	}
 
@@ -186,7 +181,7 @@ code { font: inherit; }
 		this.reset();
 		if (this.initialized) {
 			this.resetRenderer();
-			this.highlight.reset(text, this.activeHighlighter);
+			this.highlight.reset(this.buffer, this.activeHighlighter);
 		}
 	}
 
@@ -194,13 +189,13 @@ code { font: inherit; }
 		const version = ++this.modeVersion;
 		this.activeHighlighter = this.highlighter;
 		this.resetRenderer();
-		this.highlight.reset(() => this.buffer.getText(), this.activeHighlighter);
+		this.highlight.reset(this.buffer, this.activeHighlighter);
 		if (this.highlighter || this.mode === 'text') return;
 		void loadSourceHighlighter(this.mode).then(highlighter => {
 			if (version !== this.modeVersion || !this.isConnected) return;
 			this.activeHighlighter = highlighter;
 			this.resetRenderer();
-			this.highlight.reset(() => this.buffer.getText(), highlighter);
+			this.highlight.reset(this.buffer, highlighter);
 		}, () => {});
 	}
 }

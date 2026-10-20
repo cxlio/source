@@ -19,8 +19,14 @@ import { createTextareaInput } from './input.js';
 import { HitTest } from './hit-test.js';
 import { SourceHighlight } from './highlight.js';
 import { SourceFolding } from './fold.js';
-import jsonHighlighter from './json.js';
+import { highlight as jsonHighlighter } from '@cxl/gbc.json/highlight.js';
 import { textCanvas, type SourceLine } from './text.js';
+
+function fullScan(highlighter: SourceHighlighter, value: string) {
+	return typeof highlighter === 'function' ? highlighter(value) : highlighter.resume({ source: {
+		id: {}, version: 0, length: value.length, read: (start, end) => value.slice(start, end), text: () => value,
+	} });
+}
 
 const LargeLineCount = 100_000;
 const ModeExamples = {
@@ -425,6 +431,143 @@ export default spec('@cxl/ui.source', a => {
 		});
 	});
 
+	a.test('incremental highlighting', async (it: TestApi) => {
+		const examples = {
+			javascript: 'const value = 1;\n', typescript: 'const value: number = 1;\n',
+			json: '{"value":1},\n', html: '<div>value</div>\n', gb: 'const value = 1\n',
+			markdown: '# Heading\n\nvalue\n\n', basic: 'PRINT 1\n', shell: 'echo value\n',
+		};
+		for (const [mode, unit] of Object.entries(examples)) {
+			const native = await loadSourceHighlighter(mode);
+			it.assert(native && typeof native !== 'function');
+			it.should(`bounds edited scanner work and matches fresh output in ${mode}`, a => {
+				const frames = a.mockRequestAnimationFrame();
+				const buffer = new Buffer();
+				buffer.reset(unit.repeat(1500));
+				let reads = 0;
+				let calls = 0;
+				let texts = 0;
+				const counted: SourceHighlighter = {
+					resume(input, checkpoint) {
+						calls++;
+						return native.resume({ ...input, source: { ...input.source,
+							read(start, end) { reads += end - start; return input.source.read(start, end); },
+							text() { texts++; return input.source.text(); },
+						} }, checkpoint);
+					},
+					equivalent: (left, right) => native.equivalent(left, right),
+					rebase: (checkpoint, source, offset, line) => native.rebase(checkpoint, source, offset, line),
+				};
+				let tokens: readonly SourceToken[] = [];
+				let completed = false;
+				const highlight = new SourceHighlight((done, value, failed) => { a.equal(failed, false); completed = done; tokens = value; });
+				highlight.reset(buffer, counted);
+				for (let frame = 0; frame < 256; frame++) frames.advance();
+				a.equal(completed, true);
+				const initial = tokens[0];
+				const initialText = buffer.getText();
+				calls = reads = texts = 0;
+				const index = unit.length * 750 + unit.indexOf('1') + 1;
+				highlight.replace(buffer, buffer.replace(index, index, 'x'), counted);
+				highlight.replace(buffer, buffer.replace(index + 1, index + 1, 'y'), counted);
+				a.equal(calls, 0, 'coalesced edits defer scanning');
+				for (let frame = 0; frame < 256; frame++) frames.advance();
+				a.ok(calls < 8, `bounded windows: ${calls}`);
+				a.ok(reads < buffer.length * 0.75, `bounded native reads: ${reads}`);
+				a.equal(texts, 0, 'no whole-source materialization');
+				const value = buffer.getText();
+				const signature = (values: readonly SourceToken[]) => JSON.stringify(values.map(token => [token.kind, token.highlight, token.start, token.end, token.line, token.foldStart, token.foldEnd, token.error?.message, token.error?.position.start, token.error?.position.end, token.error?.position.line]));
+				a.equal(signature(tokens) === signature([...fullScan(native, value)]), true, 'full-scan token equivalence');
+				a.equal(tokens[0]?.source, value);
+				a.equal(initial?.source, initialText, 'previous token snapshot remains unchanged');
+				const sample = [tokens[0], tokens[Math.floor(tokens.length / 2)], tokens.at(-1)];
+				a.equal(JSON.stringify(structuredClone(sample)) === JSON.stringify(sample), true, 'serializable tokens');
+				const reference = new SourceHighlight(() => undefined);
+				reference.reset(buffer, native);
+				for (let frame = 0; frame < 256; frame++) frames.advance();
+				for (const line of [0, buffer.positionAt(index).line, buffer.positionAt(index).line + 1, 1499])
+					a.equalValues(highlight.getLine(line), reference.getLine(line));
+				for (const [start, end, text] of [[index, index + 2, '\n'], [0, 0, '\n'], [buffer.length - 1, buffer.length, '']] as const) {
+					highlight.replace(buffer, buffer.replace(start, end, text), counted);
+					for (let frame = 0; frame < 256; frame++) frames.advance();
+					a.equal(signature(tokens) === signature([...fullScan(native, buffer.getText())]), true, 'edited full-scan equivalence');
+				}
+			});
+		}
+		const native = await loadSourceHighlighter('javascript');
+		it.assert(native && typeof native !== 'function');
+		it.should('cancels stale work, invalidates lookups and retries after failures', (a: TestApi) => {
+			const frames = a.mockRequestAnimationFrame();
+			const buffer = new Buffer();
+			buffer.reset('const value = 1;\n'.repeat(1000));
+			let fail = false;
+			let calls = 0;
+			let failed = false;
+			let tokens: readonly SourceToken[] = [];
+			const custom: SourceHighlighter = {
+				resume: function* (input, checkpoint) {
+					calls++;
+					if (fail) throw new Error('injected');
+					return yield* native.resume(input, checkpoint);
+				},
+				equivalent: (left, right) => native.equivalent(left, right),
+				rebase: (checkpoint, source, offset, line) => native.rebase(checkpoint, source, offset, line),
+			};
+			const highlight = new SourceHighlight((_done, value, error) => { tokens = value; failed = error; });
+			highlight.reset(buffer, custom);
+			highlight.reset('const final = 2;', custom);
+			for (let frame = 0; frame < 64; frame++) frames.advance();
+			a.equal(calls, 1);
+			a.equal(tokens[0]?.source, 'const final = 2;');
+			highlight.reset(buffer, custom);
+			for (let frame = 0; frame < 64; frame++) frames.advance();
+			highlight.replace(buffer, buffer.replace(8000, 8001, 'x'), custom);
+			a.equal(highlight.getTokenAt(9000), undefined);
+			a.equal(highlight.getLine(600).length, 0);
+			fail = true;
+			for (let frame = 0; frame < 64; frame++) frames.advance();
+			a.equal(failed, true);
+			fail = false;
+			highlight.reset(buffer, custom);
+			for (let frame = 0; frame < 64; frame++) frames.advance();
+			a.equal(failed, false);
+			a.equal(tokens[0]?.kind, 'keyword');
+			highlight.replace(buffer, buffer.replace(1, 2, 'x'), custom);
+			highlight.reset('', undefined);
+			for (let frame = 0; frame < 64; frame++) frames.advance();
+			a.equal(tokens.length, 0);
+			a.equal(highlight.getNavigationTokens().length, 0);
+			let closed = 0;
+			const legacy: SourceHighlighter = function* (value) {
+				try { yield* fullScan(native, value); } finally { closed++; }
+			};
+			highlight.reset(buffer, legacy);
+			frames.advance();
+			highlight.reset('', undefined);
+			a.equal(closed, 1);
+		});
+		it.should('publishes initial navigation before a large scan completes', (a: TestApi) => {
+			const frames = a.mockRequestAnimationFrame();
+			let done = false;
+			const highlight = new SourceHighlight(complete => { done = complete; });
+			highlight.reset('const value = 1;\n'.repeat(10000), native);
+			frames.advance();
+			a.equal(highlight.getTokenAt(0)?.kind, 'keyword');
+			a.equal(done, false);
+			highlight.reset('', undefined);
+		});
+		it.should('retains piece snapshots across merges and resets', a => {
+			const buffer = new Buffer();
+			buffer.reset('a\nb');
+			buffer.insert(0, 'x');
+			const snapshot = buffer.snapshot();
+			buffer.insert(1, 'y');
+			buffer.delete(2, 3);
+			buffer.reset('new');
+			a.equal(snapshot.getText(), 'xa\nb');
+			a.equalValues(snapshot.positionAt(3), { line: 1, ch: 0 });
+		});
+	});
 	a.test('geometry', it => {
 		it.testElement('exposes viewport anchors and wrapped tab fragments without side effects', async (a: TestApi) => {
 			const value = `a\tb ${'wrapped '.repeat(18)}\nlast`;
@@ -745,7 +888,7 @@ export default spec('@cxl/ui.source', a => {
 				a.equal(first, second);
 				const scanner = await first;
 				a.assert(scanner);
-				a.equal(highlightKind([...scanner(value)][0]), kind);
+				a.equal(highlightKind([...fullScan(scanner, value)][0]), kind);
 			}
 			a.equal(await loadSourceHighlighter('text'), undefined);
 			a.equal(await loadSourceHighlighter('unknown'), undefined);
@@ -756,7 +899,7 @@ export default spec('@cxl/ui.source', a => {
 				a.equal(first, loadSourceHighlighter(mode));
 				const scanner = await first;
 				a.assert(scanner);
-				a.equal(highlightKind([...scanner(value)][0]), mode === 'markdown' ? 'heading' : 'keyword');
+				a.equal(highlightKind([...fullScan(scanner, value)][0]), mode === 'markdown' ? 'heading' : 'keyword');
 			}
 		});
 
@@ -764,14 +907,14 @@ export default spec('@cxl/ui.source', a => {
 			const scanner = await loadSourceHighlighter('json');
 			a.equal(scanner, jsonHighlighter);
 			const value = '{\n "items": [\n "hello", -1.5e2, true, false, null\n ]\n}';
-			const tokens = [...jsonHighlighter(value)];
+			const tokens = [...fullScan(jsonHighlighter, value)];
 			a.equalValues(tokens.filter(token => ['string', 'number', 'true', 'false', 'null'].includes(token.kind)).map(highlightKind),
 				['attribute', 'string', 'number', 'literal', 'literal', 'literal']);
 			a.equalValues(tokens.filter(token => token.foldStart).map(token => token.kind), ['{', '[']);
 			a.equalValues(tokens.filter(token => token.foldEnd).map(token => token.kind), [']', '}']);
 			for (const input of [value, '', '{"items": [', '{"value": "open']) {
 				let end = 0;
-				for (const token of jsonHighlighter(input)) {
+				for (const token of fullScan(jsonHighlighter, input)) {
 					a.ok(token.start >= end && token.end >= token.start && token.end <= input.length);
 					a.equal(token.source, input);
 					end = token.end;
@@ -809,7 +952,7 @@ export default spec('@cxl/ui.source', a => {
 			const scanner = await loadSourceHighlighter('shell');
 			a.assert(scanner);
 			const value = 'echo "one\ntwo"\n# comment\nif true; then\necho end\nfi';
-			const tokens = [...scanner(value)];
+			const tokens = [...fullScan(scanner, value)];
 			a.equal(tokens.find(token => highlightKind(token) === 'comment')?.line, 2);
 			a.equal(tokens.find(token => highlightKind(token) === 'keyword')?.line, 3);
 			a.equal(tokens[tokens.length - 1]?.line, 5);
@@ -819,7 +962,7 @@ export default spec('@cxl/ui.source', a => {
 			const scanner = await loadSourceHighlighter('markdown');
 			a.assert(scanner);
 			const value = '# Heading\n**bold** and `code`\n[label](https://example.test)\n> quote\n\n```js\nconst value = 1;\n```\n';
-			const tokens = [...scanner(value)];
+			const tokens = [...fullScan(scanner, value)];
 			const code = tokens.filter(token => highlightKind(token) === 'code');
 			a.equal(code.length, 2);
 			a.equal(value.slice(code[0]?.start, code[0]?.end), '`code`');
@@ -842,7 +985,7 @@ export default spec('@cxl/ui.source', a => {
 			a.assert(scanner);
 			for (const value of ['# ', '# ###\n', 'Title\n---\n', '`', '*', '[open', '   ', '```js\nconst x =']) {
 				let end = 0;
-				for (const token of scanner(value)) {
+				for (const token of fullScan(scanner, value)) {
 					a.ok(token.start >= end && token.end <= value.length && token.end > token.start, value);
 					end = token.end;
 				}
@@ -1105,6 +1248,7 @@ export default spec('@cxl/ui.source', a => {
 		for (const { name, examples, width, height, rowHeight, columns } of [
 			{ name: 'syntax-highlighting', examples: { typescript: value }, width: 320, height: 296, rowHeight: 144, columns: 1 },
 			{ name: 'additional-modes', examples: ModeExamples, width: 648, height: 408, rowHeight: 96, columns: 2 },
+			{ name: 'incremental-highlighting', examples: { javascript: 'const value = 1;\n/* note\n * details\n */\nvalue;\n' }, width: 648, height: 160, rowHeight: 160, columns: 2 },
 		]) {
 			let started = false;
 			const fixture = `<style>body{margin:0;display:grid;grid-template-columns:repeat(${columns},320px);gap:8px;background:#fff;color:#000}c-code,c-source{display:block;width:320px;height:${rowHeight}px;font:16px/24px monospace;color:#000}</style>
@@ -1121,7 +1265,15 @@ for (const [mode, value] of Object.entries(examples)) for (const tag of ['c-code
  document.body.append(element);
 }
 await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-for (const element of document.querySelectorAll('c-source')) element.setText(element.getText());
+if (${JSON.stringify(name)} === 'incremental-highlighting') {
+ const editor = document.querySelector('c-source');
+ const code = document.querySelector('c-code');
+ const start = editor.getText().indexOf('1');
+ editor.edit.replace('42', { start, end: start + 1 });
+ code.setText(editor.getText());
+ await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+ editor.fold.closeAll();
+} else for (const element of document.querySelectorAll('c-source')) element.setText(element.getText());
 </script>`;
 			const figure = it.figure(
 				name,
