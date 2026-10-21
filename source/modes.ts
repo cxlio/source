@@ -12,12 +12,14 @@ const modules = {
 	markdown: () => import('@cxl/gbc.markdown/highlight.js'),
 	basic: () => import('@cxl/gbc.basic/highlight.js'),
 	shell: () => import('@cxl/gbc.cmd/highlight.js'),
+	python: () => import('@cxl/gbc.python/highlight.js'),
 };
 
 const pending = new Map<string, Promise<Highlighter | undefined>>();
 const aliases: Readonly<Record<string, string>> = {
 	js: 'javascript', mjs: 'javascript', cjs: 'javascript', node: 'javascript', ecmascript: 'javascript',
 	ts: 'typescript', md: 'markdown', sh: 'shell', bash: 'shell', cmd: 'shell',
+	py: 'python',
 };
 
 export function loadSourceHighlighter(mode: string): Promise<SourceHighlighter | undefined> {

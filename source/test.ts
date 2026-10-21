@@ -1557,6 +1557,35 @@ export default spec('@cxl/ui.source', a => {
 			a.equal(source.fold.ranges.length, 0);
 		});
 
+		it.should('highlights Python tokens', async (a: TestApi) => {
+			const scanner = await loadSourceHighlighter('python');
+			a.assert(scanner);
+			const value = 'import json\nvalue = True\nprint("hello", 42) # comment';
+			const tokens = [...fullScan(scanner, value)];
+			for (const [text, kind] of [['import', 'keyword'], ['True', 'literal'], ['"hello"', 'string'], ['42', 'number'], ['# comment', 'comment']] as const)
+				a.equal(highlightKind(tokens.find(token => token.start === value.indexOf(text))), kind);
+		});
+
+		it.should('highlights Python heredocs and resumes shell highlighting', async (a: TestApi) => {
+			const scanner = await loadSourceHighlighter('shell');
+			a.assert(scanner);
+			for (const delimiter of ['PY', 'PYTHON']) {
+				const value = `python3 - <<'${delimiter}'\nimport json\nfrom pathlib import Path\nnew=json.load(open('dist/source/benchmark-report.json'));old=json.load(open('dist/source/baseline-benchmarks.json'))\nprint(str(new['benchmark'])[:700])\n${delimiter}\nif true; then echo 42; fi\n`;
+				const tokens = [...fullScan(scanner, value)];
+				a.equalValues(tokens.filter(token => highlightKind(token) === 'keyword').map(token => value.slice(token.start, token.end)),
+					['import', 'from', 'import', 'if', 'then', 'fi']);
+				a.equal(highlightKind(tokens.find(token => token.start === value.indexOf('700'))), 'number');
+				a.equalValues(tokens.filter(token => token.kind === 'heredoc').map(token => value.slice(token.start, token.end)), [`${delimiter}\n`]);
+				let end = 0;
+				for (const token of tokens) {
+					a.ok(token.start >= end && token.end > token.start && token.end <= value.length);
+					a.equal(token.source, value);
+					a.equal(token.line, value.slice(0, token.start).split('\n').length - 1);
+					end = token.end;
+				}
+			}
+		});
+
 		it.should('reports shell token positions across lines and quoted newlines', async (a: TestApi) => {
 			const scanner = await loadSourceHighlighter('shell');
 			a.assert(scanner);
@@ -1583,6 +1612,8 @@ export default spec('@cxl/ui.source', a => {
 				['gb', 'main { value = 1 }', 'keyword'],
 				['basic', 'IF value THEN', 'keyword'],
 				['sh', 'if true; then', 'keyword'],
+				['py', 'import json', 'keyword'],
+				['python', 'import json', 'keyword'],
 				['markdown', '# Nested', 'heading'],
 			] as const) {
 				for (const marker of ['```', '~~~~']) {

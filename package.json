@@ -15,7 +15,8 @@
 		"@cxl/gbc.basic": "file:../gbc/dist/basic/package",
 		"@cxl/gbc.markdown": "file:../gbc/dist/markdown/package",
 		"@cxl/gbc.cmd": "file:../gbc/dist/cmd/package",
-		"@cxl/gbc.json": "file:../gbc/dist/json/package"
+		"@cxl/gbc.json": "file:../gbc/dist/json/package",
+		"@cxl/gbc.python": "file:../gbc/dist/python/package"
 	},
 	"type": "module",
 	"bugs": "https://github.com/cxlio/source/issues",
