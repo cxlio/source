@@ -657,6 +657,234 @@ export default spec('@cxl/ui.source', a => {
 			a.equalValues(snapshot.positionAt(3), { line: 1, ch: 0 });
 		});
 	});
+	a.test('line edits', it => {
+		const snapshot = (source: Source) => ({ ranges: source.selection.ranges(), head: source.cursor.index });
+		const verify = (a: TestApi, source: Source, command: 'insertLine' | 'removeLine' | 'indentMore' | 'indentLess' | 'indentAuto', expected: string) => {
+			const text = source.getText();
+			const before = snapshot(source);
+			source.edit[command]();
+			a.equal(source.getText(), expected);
+			const after = snapshot(source);
+			source.history.undo();
+			a.equal(source.getText(), text);
+			a.equalValues(snapshot(source), before);
+			source.history.redo();
+			a.equal(source.getText(), expected);
+			a.equalValues(snapshot(source), after);
+		};
+
+		it.should('inserts below empty, single, first, middle and final lines with native newlines', a => {
+			const source = new Source();
+			for (const newline of ['\n', '\r\n']) {
+				for (const [text, at, expected, caret] of [
+					['', 0, '\n', 1],
+					['one', 1, 'one\n', 4],
+					[`a${newline}b${newline}c`, 0, `a${newline}${newline}b${newline}c`, 1 + newline.length],
+					[`a${newline}b${newline}c`, 2 + newline.length, `a${newline}b${newline}${newline}c`, 2 + 2 * newline.length],
+					[`a${newline}b`, 2 + newline.length, `a${newline}b${newline}`, 2 + 2 * newline.length],
+					[`a${newline}`, 1 + newline.length, `a${newline}${newline}`, 1 + 2 * newline.length],
+				] as const) {
+					source.setText(text);
+					source.selection.set(at);
+					verify(a, source, 'insertLine', expected);
+					a.equal(source.cursor.index, caret);
+				}
+			}
+		});
+
+		it.should('inserts once per overlapping range with configured inherited indentation', a => {
+			const source = new Source();
+			source.indentWithTabs = false;
+			source.tabSize = 2;
+			source.setText('  a\n\tb\nc');
+			source.selection.set(6, 0);
+			source.selection.add({ start: 4, end: 6 }, { start: 7, end: 8 });
+			verify(a, source, 'insertLine', '  a\n\tb\n  \nc\n');
+			a.equalValues(source.selection.ranges(), [{ start: 9, end: 9 }, { start: 9, end: 9 }, { start: 12, end: 12 }]);
+			source.edit.insertLine();
+			a.equal(source.getText(), '  a\n\tb\n  \n  \nc\n\n');
+			source.indentWithTabs = true;
+			source.setText(' \ta\nnext');
+			source.selection.set(2);
+			verify(a, source, 'insertLine', ' \ta\n\t\nnext');
+		});
+
+		it.should('removes whole lines including final separators without splitting CRLF', a => {
+			const source = new Source();
+			for (const newline of ['\n', '\r\n']) {
+				for (const [text, start, end, expected] of [
+					['one', 1, 1, ''],
+					[`a${newline}b${newline}c`, 0, 0, `b${newline}c`],
+					[`a${newline}b${newline}c`, 1 + newline.length, 1 + newline.length, `a${newline}c`],
+					[`a${newline}b${newline}c`, 2 + 2 * newline.length, 3 + 2 * newline.length, `a${newline}b`],
+					[`a${newline}`, 1 + newline.length, 1 + newline.length, 'a'],
+					[`a${newline}b${newline}`, 1 + newline.length, 2 + 2 * newline.length, `a${newline}`],
+					[`a${newline}b`, 0, 2 + newline.length, ''],
+				] as const) {
+					source.setText(text);
+					source.selection.set(start, end);
+					verify(a, source, 'removeLine', expected);
+				}
+			}
+		});
+
+		it.should('deduplicates overlapping and adjacent deletions and excludes terminal column zero', a => {
+			const source = new Source();
+			source.setText('a\nb\nc\nd\ne');
+			source.selection.set(4, 0);
+			source.selection.add({ start: 2, end: 4 }, { start: 4, end: 4 }, { start: 8, end: 8 });
+			verify(a, source, 'removeLine', 'd');
+			a.equalValues(source.selection.ranges(), [{ start: 0, end: 0 }, { start: 0, end: 0 }, { start: 0, end: 0 }, { start: 1, end: 1 }]);
+			source.setText('a\nb\nc');
+			source.selection.set(4, 0);
+			verify(a, source, 'removeLine', 'c');
+		});
+
+		it.should('indents deduplicated logical lines and preserves reversed selection direction', a => {
+			const source = new Source();
+			source.indentWithTabs = false;
+			source.tabSize = 2;
+			source.setText('a\nb\nc');
+			source.selection.set(4, 1);
+			source.selection.add({ start: 0, end: 3 }, { start: 3, end: 1 });
+			verify(a, source, 'indentMore', '  a\n  b\nc');
+			a.equalValues(source.selection.ranges(), [{ start: 3, end: 8 }, { start: 0, end: 7 }, { start: 3, end: 7 }]);
+			a.equal(source.cursor.index, 3);
+			verify(a, source, 'indentLess', 'a\nb\nc');
+			a.equal(source.cursor.index, 1);
+		});
+
+		it.should('preserves endpoints inside leading whitespace when adding indentation', a => {
+			const source = new Source();
+			source.indentWithTabs = false;
+			source.tabSize = 4;
+			source.setText('    abc');
+			source.selection.set(3, 1);
+			verify(a, source, 'indentMore', '        abc');
+			a.equalValues(source.selection.range(), { start: 5, end: 7 });
+			a.equal(source.cursor.index, 5);
+		});
+
+		it.testElement('edits registered mounted components with CRLF and synchronized geometry', async (a: TestApi) => {
+			a.equal(customElements.get('c-source'), Source);
+			const registered = document.createElement('c-source');
+			a.assert(registered instanceof Source);
+			const { source } = await createSourceEditor(a, 'a\r\nb\r\nc');
+			source.indentWithTabs = false;
+			source.tabSize = 2;
+			source.selection.set(6, 0);
+			verify(a, source, 'indentMore', '  a\r\n  b\r\nc');
+			verify(a, source, 'indentLess', 'a\r\nb\r\nc');
+			source.selection.set(3);
+			source.edit.insertLine();
+			a.equal(source.getText(), 'a\r\nb\r\n\r\nc');
+			source.edit.removeLine();
+			a.equal(source.getText(), 'a\r\nb\r\nc');
+			await a.a11y(source);
+			await new Promise(requestAnimationFrame);
+			a.equal(source.geometry.caret(source.cursor.index).status, 'visible');
+			source.setText('  a\r\n b\r\nc');
+			source.selection.set(5, 7);
+			verify(a, source, 'indentAuto', '  a\r\n  b\r\nc');
+		});
+
+		it.should('uses visual stops and configured whitespace for mixed prefixes', a => {
+			const source = new Source();
+			for (const tabs of [true, false]) {
+				source.indentWithTabs = tabs;
+				source.tabSize = 4;
+				source.setText(' \ta\n   b\n\t c\n \t');
+				source.selection.set(0, Infinity);
+				verify(a, source, 'indentMore', tabs ? '\t\ta\n\t   b\n\t\t c\n\t\t' : '        a\n       b\n         c\n        ');
+				source.setText(' \ta\n   b\n\t c\n \t');
+				source.selection.set(0, Infinity);
+				verify(a, source, 'indentLess', tabs ? 'a\nb\n\tc\n' : 'a\nb\n    c\n');
+			}
+		});
+
+		it.should('normalizes auto indentation from preceding nonblank lines and clears blank lines', a => {
+			const source = new Source();
+			source.indentWithTabs = false;
+			source.tabSize = 2;
+			source.setText('\ta\n \n b\n\t\tc\n');
+			source.selection.set(3, Infinity);
+			verify(a, source, 'indentAuto', '\ta\n\n  b\n  c\n');
+			source.selection.set(0, Infinity);
+			verify(a, source, 'indentAuto', 'a\n\nb\nc\n');
+			source.setText(' \n\tb');
+			source.selection.set(0, Infinity);
+			verify(a, source, 'indentAuto', '\nb');
+		});
+
+		it.should('handles bounded selections, invalid tab sizes and disabled input', a => {
+			const source = new Source();
+			source.input.disable();
+			source.indentWithTabs = false;
+			for (const size of [0, -1, 1.5, NaN, Infinity, 257]) {
+				source.tabSize = size;
+				source.setText('x');
+				source.selection.set(Infinity, -100);
+				verify(a, source, 'indentMore', '    x');
+				verify(a, source, 'indentLess', 'x');
+			}
+			source.setText('');
+			source.selection.set(NaN, Infinity);
+			verify(a, source, 'indentMore', '    ');
+			verify(a, source, 'indentLess', '');
+		});
+
+		it.should('keeps no-ops out of history and notifications and invalidates redo for real edits', a => {
+			const source = new Source();
+			source.setText('a');
+			source.edit.insertLine();
+			source.history.undo();
+			let changes = 0;
+			const subscription = source.changes.subscribe(() => changes++);
+			source.edit.indentLess();
+			source.edit.indentAuto();
+			a.equal(changes, 0);
+			source.history.redo();
+			a.equal(source.getText(), 'a\n');
+			source.history.undo();
+			source.edit.indentMore();
+			const value = source.getText();
+			source.history.redo();
+			a.equal(source.getText(), value);
+			source.setText('');
+			changes = 0;
+			source.edit.removeLine();
+			source.edit.indentLess();
+			source.edit.indentAuto();
+			a.equal(changes, 0);
+			subscription.unsubscribe();
+		});
+
+		it.should('emits replayable changes for each modified line and keeps replacement independent', a => {
+			const source = new Source();
+			source.setText('a\nb');
+			source.selection.set(0, 3);
+			let value = source.getText();
+			const changes: SourceChange[] = [];
+			const subscription = source.changes.subscribe(change => {
+				a.equal(value.slice(change.start, change.end), change.removed);
+				value = value.slice(0, change.start) + change.text + value.slice(change.end);
+				changes.push(change);
+			});
+			source.edit.indentMore();
+			a.equal(changes.length, 2);
+			a.equal(value, source.getText());
+			source.history.undo();
+			a.equal(value, 'a\nb');
+			source.history.redo();
+			a.equal(value, '\ta\n\tb');
+			source.edit.replace('X', { start: 1, end: 2 });
+			a.equal(source.getText(), '\tX\n\tb');
+			source.history.undo();
+			a.equal(source.getText(), '\ta\n\tb');
+			subscription.unsubscribe();
+		});
+	});
+
 	a.test('public input', it => {
 		it.testElement('handles composed shadow clipboard events once', async (a: TestApi) => {
 			const { source } = await createSourceEditor(a, 'ab');

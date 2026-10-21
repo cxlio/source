@@ -107,6 +107,11 @@ export interface SourceInputFeature {
 }
 
 export interface SourceEditFeature {
+	insertLine(): void;
+	removeLine(): void;
+	indentMore(): void;
+	indentLess(): void;
+	indentAuto(): void;
 	replace(value: string, range?: SourceRange): SourceChange;
 }
 
@@ -407,6 +412,11 @@ export class Source extends Code {
 		};
 	})();
 	readonly edit: SourceEditFeature = {
+		insertLine: () => this.editLines('insert'),
+		removeLine: () => this.editLines('remove'),
+		indentMore: () => this.editLines('more'),
+		indentLess: () => this.editLines('less'),
+		indentAuto: () => this.editLines('auto'),
 		replace: (value, range) =>
 			range
 				? this.applyEdit(value, range)
@@ -1245,6 +1255,104 @@ canvas {
 		if (index === Infinity) return maximum;
 		if (!Number.isFinite(index)) return 0;
 		return Math.max(0, Math.min(Math.trunc(index), maximum));
+	}
+
+	protected editLines(command: 'insert' | 'remove' | 'more' | 'less' | 'auto') {
+		const before = this.selectionSnapshot();
+		const targets = before.map((selection, index) => {
+			const range = selectionRange(selection);
+			const first = this.buffer.positionAt(range.start).line;
+			const last = this.buffer.positionAt(range.end);
+			return {
+				first,
+				last: last.line - (range.end > range.start && last.ch === 0 ? 1 : 0),
+				indexes: [index],
+			};
+		}).sort((left, right) => left.first - right.first || left.last - right.last);
+		const groups: typeof targets = [];
+		for (const target of targets) {
+			const previous = groups.at(-1);
+			if (previous && target.first <= previous.last + (command === 'remove' ? 1 : 0)) {
+				previous.last = Math.max(previous.last, target.last);
+				previous.indexes.push(...target.indexes);
+			} else groups.push(target);
+		}
+		const size = Number.isInteger(this.tabSize) && this.tabSize > 0 && this.tabSize <= 256
+			? this.tabSize : 4;
+		const width = (value: string) => {
+			let column = 0;
+			for (const character of value) column += character === '\t' ? size - column % size : 1;
+			return column;
+		};
+		const indentation = (column: number) => this.indentWithTabs
+			? '\t'.repeat(Math.floor(column / size)) + ' '.repeat(column % size)
+			: ' '.repeat(column);
+		const prefix = (line: number) => this.buffer.getLine(line).match(/^[\t ]*/)?.[0] ?? '';
+		const edits: { start: number; end: number; text: string; indexes?: number[]; caret?: number }[] = [];
+		let previousIndent: { line: number; column: number } | undefined;
+		for (const group of groups) {
+			const range = this.buffer.lineRange(group.first, group.last);
+			if (command === 'insert') {
+				const next = this.buffer.lineRange(group.last + 1).start;
+				const hasNext = group.last + 1 < this.buffer.getLineCount();
+				const newline = hasNext
+					? this.buffer.getText(range.end, next)
+					: group.last > 0
+						? this.buffer.getText(this.buffer.lineRange(group.last - 1).end, this.buffer.lineRange(group.last).start)
+						: '\n';
+				const indent = indentation(width(prefix(group.last)));
+				const start = hasNext ? next : range.end;
+				edits.push({ start, end: start, text: hasNext ? indent + newline : newline + indent,
+					indexes: group.indexes, caret: hasNext ? indent.length : newline.length + indent.length });
+			} else if (command === 'remove') {
+				const hasNext = group.last + 1 < this.buffer.getLineCount();
+				edits.push({
+					start: !hasNext && group.first > 0 ? this.buffer.lineRange(group.first - 1).end : range.start,
+					end: hasNext ? this.buffer.lineRange(group.last + 1).start : range.end,
+					text: '',
+				});
+			} else for (let line = group.first; line <= group.last; line++) {
+				const leading = prefix(line);
+				let column = width(leading);
+				if (command === 'more') column += size;
+				else if (command === 'less') column = Math.max(0, Math.floor((column - 1) / size) * size);
+				else {
+					column = 0;
+					if (this.buffer.getLine(line).trim()) {
+						let previous = line - 1;
+						while (previous >= 0 && !this.buffer.getLine(previous).trim()) previous--;
+						if (previous >= 0) column = previousIndent?.line === previous
+							? previousIndent.column : width(prefix(previous));
+						previousIndent = { line, column };
+					}
+				}
+				const start = this.buffer.lineRange(line).start;
+				edits.push({ start, end: start + leading.length, text: indentation(column) });
+			}
+		}
+		let selections = before;
+		const changes: SourceChange[] = [];
+		for (const edit of edits.reverse()) {
+			if (this.buffer.getText(edit.start, edit.end) === edit.text) continue;
+			const change = this.replace(edit.start, edit.end, edit.text);
+			changes.push(change);
+			selections = selections.map(selection => {
+				const mapped = this.mapSelection(selection, change);
+				if (command === 'insert' || command === 'remove') return mapped;
+				const map = (index: number, next: number) => index > change.start && index < change.end
+					? Math.max(change.start, index + change.text.length - change.removed.length) : next;
+				return { anchor: map(selection.anchor, mapped.anchor), head: map(selection.head, mapped.head) };
+			});
+			if (edit.indexes) for (const index of edit.indexes) {
+				const caret = edit.start + (edit.caret ?? 0);
+				selections[index] = { anchor: caret, head: caret };
+			}
+			this.changeSubject.next(change);
+		}
+		if (!changes.length) return;
+		this.blockAnchor = undefined;
+		this.setSelectionsState(selections, false);
+		this.recordHistory({ changes, before, after: this.selectionSnapshot() }, false);
 	}
 
 	protected applyEdit(value: string, range: SourceRange) {
