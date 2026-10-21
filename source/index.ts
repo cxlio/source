@@ -1707,6 +1707,14 @@ canvas {
 		const { decorationRenderer, host, refresh, text } = this;
 		this.rowHeights.clear();
 		const renderedHeights = new Map<number, number>();
+		const render = (index: number, order: number) => {
+			const line = this.folding.lineAt(index);
+			if (order === 0) text.begin(line);
+			const spans = this.folding.spans(line);
+			const rect = spans ? this.renderFoldedLine(line, spans) : text.renderLine(line, this.buffer.getLine(line), this.highlight.getLine(line));
+			renderedHeights.set(index, rect.offsetHeight);
+			return rect;
+		};
 		host.append(
 			this.gutterHost,
 			decorationRenderer.behindCanvas,
@@ -1739,14 +1747,7 @@ canvas {
 					for (const row of this.rowHeights.keys())
 						if (row >= resetFrom || row >= dataLength) this.rowHeights.delete(row);
 				}),
-				render: (index, order) => {
-					const line = this.folding.lineAt(index);
-					if (order === 0) text.begin(line);
-					const spans = this.folding.spans(line);
-					const rect = spans ? this.renderFoldedLine(line, spans) : text.renderLine(line, this.buffer.getLine(line), this.highlight.getLine(line));
-					renderedHeights.set(index, rect.offsetHeight);
-					return rect;
-				},
+				render,
 				dataLength: this.folding.visibleCount,
 				translate: false,
 			}).tap(event => {
@@ -1756,6 +1757,14 @@ canvas {
 				for (const [row, height] of renderedHeights)
 					if (event.atEnd || (row >= event.start - 1 && row < measuredEnd))
 						this.rowHeights.set(row, height);
+				if (event.end < this.folding.visibleCount && last &&
+					event.offset + last.offsetTop + last.height < host.clientHeight) {
+					for (let row = lastRow + 1; row < this.folding.visibleCount; row++) {
+						const rect = render(row, 1);
+						if (event.offset + rect.offsetTop + rect.offsetHeight >= host.clientHeight) break;
+					}
+					refresh.next({ dataLength: this.folding.visibleCount });
+				}
 				renderedHeights.clear();
 				this.offsetY = event.offset;
 				text.commit(event.offset);
@@ -1767,9 +1776,6 @@ canvas {
 						offset: event.offset,
 					});
 				this.rendered();
-				if (event.end < this.folding.visibleCount && last &&
-					event.offset + last.offsetTop + last.height < host.clientHeight)
-					refresh.next({ dataLength: this.folding.visibleCount });
 			}),
 			onFontsReady().tap(() => this.resetRenderer()),
 			onThemeChange.tap(() => {

@@ -997,6 +997,33 @@
             "sampleTime": 50,
             "samples": 30
           }
+        },
+        "Source line rendering benchmarks > large-document pending highlighting edits": {
+          "type": "benchmark",
+          "iterations": 94,
+          "values": [
+            0.17553191489361702,
+            0.17872340424342992,
+            0.17553191489361702,
+            0.17127659574071777,
+            0.17127659574071777,
+            0.1702127659574468,
+            0.16808510639090488,
+            0.1702127659574468,
+            0.17340425530725972,
+            0.1723404255438041
+          ],
+          "median": 0.17180851064226094,
+          "mad": 0.0015957446848141321,
+          "p75": 0.1749999999970277,
+          "p95": 0.17728723403601412,
+          "operationsPerSecond": 5820.433436398249,
+          "options": {
+            "warmup": 20,
+            "sampleTime": 20,
+            "samples": 10,
+            "maxRegression": 25
+          }
         }
       }
     }

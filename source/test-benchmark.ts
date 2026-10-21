@@ -1,6 +1,6 @@
 import { spec, type TestApi } from '@cxl/spec';
 import type { HighlightCheckpoint } from '@cxl/gbc.sdk';
-import type { SourceToken } from './highlight.js';
+import { SourceHighlight, type SourceToken } from './highlight.js';
 import { Buffer } from './buffer.js';
 import { Code } from './code.js';
 import { foldGutter, gutterMarkers, Source } from './index.js';
@@ -57,6 +57,28 @@ export default spec('Source line rendering benchmarks', async s => {
 		const restart = highlighter.rebase(prefix, changed, 0, 0);
 		a.equal(highlighter.equivalent(checkpoint(highlighter.resume({ source: changed, end: 8192 }, restart)), old), true);
 		await a.benchmark(() => highlighter.equivalent(checkpoint(highlighter.resume({ source: changed, end: 8192 }, restart)), old), benchmarkOptions);
+	});
+	s.test('large-document pending highlighting edits', async (a: TestApi) => {
+		a.setTimeout(60000);
+		const highlighter = await loadSourceHighlighter('javascript');
+		a.assert(highlighter);
+		const buffer = new Buffer();
+		const unit = 'const value = 12;\n';
+		buffer.reset(unit.repeat(HistoryLineCount));
+		let completed: (() => void) | undefined;
+		const highlight = new SourceHighlight(done => { if (done) completed?.(); });
+		await new Promise<void>(resolve => {
+			completed = resolve;
+			highlight.reset(buffer, highlighter);
+		});
+		const index = unit.length * (HistoryLineCount / 2) + 14;
+		let alternate = false;
+		await a.benchmark(() => {
+			alternate = !alternate;
+			highlight.replace(buffer, buffer.replace(index, index + 1, alternate ? '3' : '4'), highlighter);
+			return highlight.getLine(HistoryLineCount / 2).length;
+		}, { ...featureBenchmarkOptions, maxRegression: 25 });
+		highlight.reset('');
 	});
 	s.test('large-document html', async a => {
 		const code = a.element(Code);

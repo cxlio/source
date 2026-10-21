@@ -209,6 +209,10 @@ export class SourceFolding implements SourceFoldFeature {
 	replaced(change: BufferChange) {
 		const delta = change.text.length - (change.end - change.start);
 		this.#ranges = this.#ranges.flatMap(range => {
+			if (!range.closed && change.start >= range.start && change.end <= range.end) {
+				const endLine = range.endLine + change.lineDelta;
+				return endLine > range.line ? [{ ...range, end: range.end + delta, endLine }] : [];
+			}
 			if (change.start < range.end && change.end >= range.start) return [];
 			if (change.end < range.start) return [{
 				...range,
@@ -219,12 +223,12 @@ export class SourceFolding implements SourceFoldFeature {
 			}];
 			return [range];
 		});
-		this.#refresh();
+		this.#refresh(change.lineDelta !== 0);
 	}
 
 	reset() {
 		this.#ranges = [];
-		this.#refresh();
+		this.#refresh(true);
 	}
 
 	#hiddenIndex(index: number) {
@@ -262,7 +266,8 @@ export class SourceFolding implements SourceFoldFeature {
 		}
 	}
 
-	#refresh() {
+	#refresh(reset = false) {
+		const previous = this.#hidden;
 		this.#hidden = [];
 		let removed = 0;
 		for (const range of this.#ranges) {
@@ -282,7 +287,11 @@ export class SourceFolding implements SourceFoldFeature {
 			removed += endLine - range.line;
 			this.#hidden.push({ start: range.line + 1, end: endLine, row, removed, from: range.start, to: range.end });
 		}
-		this.changed();
+		if (reset || previous.length !== this.#hidden.length || this.#hidden.some((range, index) => {
+			const old = previous[index];
+			return old?.from !== range.from || old.to !== range.to || old.start !== range.start ||
+				old.end !== range.end || old.row !== range.row || old.removed !== range.removed;
+		})) this.changed();
 		this.onChange.next();
 	}
 }

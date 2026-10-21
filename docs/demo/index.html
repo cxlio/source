@@ -122,6 +122,7 @@ createEditor([
 
 			const source = document.getElementById('source');
 			const status = document.getElementById('status');
+			const numberFormat = new Intl.NumberFormat();
 			const position = document.getElementById('position');
 			const find = document.getElementById('find');
 			const replace = document.getElementById('replace');
@@ -203,7 +204,7 @@ createEditor([
 				source.fatCursor = event.target.checked;
 				status.textContent = event.target.checked ? 'Block cursor' : 'Text cursor';
 			});
-			source.changes.subscribe(() => { status.textContent = `${source.getText().length.toLocaleString()} characters`; updatePosition(); });
+			source.changes.subscribe(() => { status.textContent = `${numberFormat.format(source.getText().length)} characters`; updatePosition(); });
 			source.addEventListener('click', updatePosition);
 			source.addEventListener('keyup', updatePosition);
 		</script>

@@ -50,6 +50,7 @@ function moveToken<Node extends SourceToken>(token: Node, source: HighlightSourc
 export class SourceHighlight {
 	#frame = 0;
 	#lines = new Map<number, SourceTokenSpan[]>();
+	#pendingLines?: Map<number, SourceTokenSpan[]>;
 	#navigationTokens: SourceToken[] = [];
 	#tokens: SourceToken[] = [];
 	#version = 0;
@@ -69,6 +70,7 @@ export class SourceHighlight {
 	) {}
 
 	reset(readSource: SourceReader, highlighter?: SourceHighlighter, retain = 0, retainLine = 0) {
+		this.#pendingLines = undefined;
 		this.#ready = false;
 		this.#dirty = undefined;
 		this.#checkpoints = [];
@@ -81,10 +83,14 @@ export class SourceHighlight {
 	}
 
 	replace(buffer: Buffer, change: BufferChange, highlighter?: SourceHighlighter) {
+		const pending = highlighter && highlighter === this.#highlighter ? this.#mapLines(buffer, change) : undefined;
+		if (pending) this.#lines = new Map();
 		if (!highlighter || typeof highlighter === 'function' || highlighter !== this.#highlighter || !this.#ready) {
 			this.reset(buffer, highlighter, change.start, change.lineStart);
+			this.#pendingLines = pending;
 			return;
 		}
+		this.#pendingLines = pending;
 		const previous = this.#dirty;
 		const oldIndex = (index: number, end: boolean) => !previous || index <= previous.start ? index :
 			index >= previous.end + previous.delta ? index - previous.delta : end ? previous.end : previous.start;
@@ -94,16 +100,18 @@ export class SourceHighlight {
 			delta: (previous?.delta ?? 0) + change.text.length - (change.end - change.start),
 			lines: (previous?.lines ?? 0) + change.lineDelta,
 		};
-		this.#navigationTokens = this.#navigationTokens.filter(token => token.end <= (this.#dirty?.start ?? 0));
-		for (const line of this.#lines.keys()) if (line >= change.lineStart) this.#lines.delete(line);
 		this.#schedule(buffer, highlighter);
 	}
 
 	getLine(line: number) {
-		return this.#lines.get(line) ?? [];
+		return this.#pendingLines?.get(line) ?? this.#lines.get(line) ?? [];
 	}
 
+
 	getNavigationTokens(): readonly SourceToken[] {
+		const retain = this.#dirty?.start;
+		if (retain !== undefined)
+			this.#navigationTokens = this.#navigationTokens.filter(token => token.end <= retain);
 		return this.#navigationTokens;
 	}
 
@@ -119,6 +127,40 @@ export class SourceHighlight {
 			else if (index > token.end) low = middle + 1;
 			else return token;
 		}
+	}
+
+	#mapLines(buffer: Buffer, change: BufferChange) {
+		const lines = this.#pendingLines ?? this.#lines;
+		const oldLineEnd = change.lineEnd - Math.max(change.lineDelta, 0);
+		const first = lines.get(change.lineStart) ?? [];
+		const last = lines.get(oldLineEnd) ?? [];
+		const result = change.lineDelta ? new Map<number, SourceTokenSpan[]>() : lines;
+		const start = change.start - buffer.lineRange(change.lineStart).start;
+		const end = change.lineStart === oldLineEnd ? start + change.removed.length :
+			change.removed.length - change.removed.lastIndexOf('\n') - 1;
+		const insertedEnd = buffer.positionAt(change.start + change.text.length);
+		const append = (line: number, span: SourceTokenSpan) => {
+			if (span.end <= span.start) return;
+			const spans = result.get(line) ?? [];
+			const last = spans.at(-1);
+			if (last?.kind === span.kind && last.end === span.start) last.end = span.end;
+			else spans.push(span);
+			result.set(line, spans);
+		};
+		if (change.lineDelta) for (const [line, spans] of lines) {
+			if (line < change.lineStart || line > oldLineEnd)
+				result.set(line > oldLineEnd ? line + change.lineDelta : line, spans);
+		} else for (let line = change.lineStart; line <= oldLineEnd; line++) result.delete(line);
+		for (const span of first)
+			append(change.lineStart, { ...span, end: Math.min(span.end, start) });
+		const inherited = first.find(span => span.start < start && span.end >= start) ?? first.find(span => span.start === start);
+		if (inherited) for (let line = change.lineStart; line <= insertedEnd.line; line++)
+			append(line, { start: line === change.lineStart ? start : 0,
+				end: line === insertedEnd.line ? insertedEnd.ch : buffer.getLine(line).length, kind: inherited.kind });
+		for (const span of last)
+			append(insertedEnd.line, { ...span, start: insertedEnd.ch + Math.max(span.start - end, 0),
+				end: insertedEnd.ch + span.end - end });
+		return result;
 	}
 
 	#close() {
@@ -198,6 +240,7 @@ export class SourceHighlight {
 			this.#frame = 0;
 			this.#iterator = undefined;
 			this.#ready = !failed;
+			this.#pendingLines = undefined;
 			this.#dirty = undefined;
 			this.#checkpoints = failed ? [] : checkpoints;
 			this.#tokens = tokens;

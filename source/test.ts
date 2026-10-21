@@ -495,6 +495,96 @@ export default spec('@cxl/ui.source', a => {
 		}
 		const native = await loadSourceHighlighter('javascript');
 		it.assert(native && typeof native !== 'function');
+		for (const scanner of [native, function* (value: string) { yield* fullScan(native, value); }]) {
+			it.should(`retains adjusted paint spans while ${typeof scanner === 'function' ? 'custom' : 'native'} highlighting is pending`, a => {
+				const frames = a.mockRequestAnimationFrame();
+				const buffer = new Buffer();
+				buffer.reset('const value = 12;\nconst other = 3;');
+				const highlight = new SourceHighlight(() => undefined);
+				highlight.reset(buffer, scanner);
+				for (let frame = 0; frame < 64; frame++) frames.advance();
+				for (const [start, end, text] of [[15, 16, ''], [15, 15, '4'], [14, 16, '56'], [15, 15, '\n'], [15, 16, '']] as const) {
+					highlight.replace(buffer, buffer.replace(start, end, text), scanner);
+					const reference = new SourceHighlight(() => undefined);
+					reference.reset(buffer, native);
+					const pending = Array.from({ length: buffer.getLineCount() }, (_, line) => highlight.getLine(line));
+					for (let frame = 0; frame < 64; frame++) frames.advance();
+					for (let line = 0; line < buffer.getLineCount(); line++) {
+						a.equalValues(pending[line], reference.getLine(line), 'pending paint matches the edited token positions');
+						a.equalValues(highlight.getLine(line), reference.getLine(line));
+					}
+				}
+				highlight.replace(buffer, buffer.replace(15, 15, '7'), scanner);
+				highlight.replace(buffer, buffer.replace(16, 16, '8'), scanner);
+				a.ok(highlight.getLine(0).some(span => span.kind === 'number' && span.start === 14 && span.end === 18));
+				highlight.replace(buffer, buffer.replace(1, 2, 'x'), scanner);
+				a.equal(highlight.getNavigationTokens().length, 0, 'an earlier coalesced edit invalidates the retained semantic prefix');
+				a.ok(highlight.getLine(1).length > 0, 'paint cache ownership survives coalesced edits');
+				for (let frame = 0; frame < 64; frame++) frames.advance();
+				highlight.reset('', undefined);
+				a.equal(highlight.getLine(0).length, 0);
+			});
+		}
+		it.testElement('paints Backspace with syntax colors before parsing completes', async (a: TestApi) => {
+			const { source } = await createSourceEditor(a, 'const value = 12;');
+			source.highlighter = native;
+			source.tokenColors = { keyword: '#123456', number: '#654321' };
+			await a.sleep(60);
+			const context = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="text"]')?.getContext('2d');
+			a.assert(context);
+			const frames = a.mockRequestAnimationFrame();
+			const painted: { text: string; color: string | CanvasGradient | CanvasPattern }[] = [];
+			const fillText = context.fillText;
+			context.fillText = function (text, x, y, maxWidth) {
+				if (!source.getTokenAt(14)) painted.push({ text, color: this.fillStyle });
+				fillText.call(this, text, x, y, maxWidth);
+			};
+			try {
+				source.selection.set(16);
+				source.input.backspace();
+				for (let frame = 0; frame < 4; frame++) frames.advance();
+				a.equal(source.getText(), 'const value = 1;');
+				a.ok(painted.some(call => call.text === 'const' && call.color === '#123456'));
+				a.ok(painted.some(call => call.text === '1' && call.color === '#654321'));
+			} finally { context.fillText = fillText; }
+		});
+		it.testElement('keeps bottom lines painted through repeated Backspace redraws', async (a: TestApi) => {
+			const frame = a.element('iframe');
+			frame.style.cssText = 'width:800px;height:900px;border:0';
+			frame.src = '../../docs/demo/index.html';
+			await a.sleep(300);
+			const source = frame.contentDocument?.querySelector<Source>('c-source');
+			a.assert(source);
+			source.style.height = '720px';
+			await a.sleep(100);
+			const context = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="text"]')?.getContext('2d');
+			a.assert(context);
+			const paints: boolean[] = [];
+			const clearRect = context.clearRect;
+			const fillText = context.fillText;
+			context.clearRect = function (x, y, width, height) {
+				paints.push(false);
+				clearRect.call(this, x, y, width, height);
+			};
+			context.fillText = function (text, x, y, maxWidth) {
+				if (text === 'createEditor') paints[paints.length - 1] = true;
+				fillText.call(this, text, x, y, maxWidth);
+			};
+			try {
+				source.selection.set(source.getText().indexOf('function createEditor') + 10);
+				for (let edit = 0; edit < 10; edit++) {
+					source.input.backspace();
+					await a.sleep(40);
+				}
+				source.selection.set(source.getText().indexOf('\n') + 1);
+				source.input.backspace();
+				await a.sleep(60);
+				a.equal(frame.contentDocument?.getElementById('status')?.textContent,
+					`${source.getText().length.toLocaleString()} characters`);
+				a.ok(paints.length > 0);
+				a.equal(paints.filter(painted => !painted).length, 0, 'every redraw includes the bottom line');
+			} finally { context.clearRect = clearRect; context.fillText = fillText; }
+		});
 		it.should('cancels stale work, invalidates lookups and retries after failures', (a: TestApi) => {
 			const frames = a.mockRequestAnimationFrame();
 			const buffer = new Buffer();
@@ -522,7 +612,7 @@ export default spec('@cxl/ui.source', a => {
 			for (let frame = 0; frame < 64; frame++) frames.advance();
 			highlight.replace(buffer, buffer.replace(8000, 8001, 'x'), custom);
 			a.equal(highlight.getTokenAt(9000), undefined);
-			a.equal(highlight.getLine(600).length, 0);
+			a.ok(highlight.getLine(600).length > 0, 'pending paint does not expose stale semantic tokens');
 			fail = true;
 			for (let frame = 0; frame < 64; frame++) frames.advance();
 			a.equal(failed, true);
@@ -3324,6 +3414,44 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 	});
 
 	a.test('folding', it => {
+		it.testElement('keeps open fold indicators through pending edits', async (a: TestApi) => {
+			const { source } = await createSourceEditor(a, 'function example() {\n  const value = 12;\n}\nafter();');
+			source.mode = 'javascript';
+			source.gutters = [lineNumbers(), foldGutter(source.fold)];
+			await a.sleep(80);
+			const button = source.shadowRoot?.querySelector('[part~=fold-toggle] button');
+			a.assert(button);
+			for (const [removed, inserted] of [['12', '123'], ['123', '1'], ['1', '1\n  extra();'], ['1\n  extra();', '42']] as const) {
+				const start = source.getText().indexOf(removed);
+				source.edit.replace(inserted, { start, end: start + removed.length });
+				a.ok(source.fold.range(0), 'pending parsing retains the open fold');
+				await a.sleep(60);
+				a.equal(source.shadowRoot?.querySelector('[part~=fold-toggle] button'), button, 'redrawing preserves the gutter button');
+				a.equal(source.fold.range(0)?.end, source.getText().indexOf('}'));
+			}
+			const end = source.getText().indexOf('}');
+			source.edit.replace('', { start: end, end: end + 1 });
+			await a.sleep(60);
+			a.equal(source.fold.range(0), undefined, 'parsing removes a fold whose closing token was deleted');
+		});
+		const foldEditFigure = it.figure('fold-indicator-edit',
+			'<c-source-fold-edit style="display:block;width:320px;height:160px;font:12px monospace;background:#fff;color:#111"></c-source-fold-edit>',
+			() => {
+				if (customElements.get('c-source-fold-edit')) return;
+				customElements.define('c-source-fold-edit', class extends Source {
+					constructor() {
+						super();
+						this.mode = 'javascript';
+						this.gutters = [lineNumbers(), foldGutter(this.fold)];
+						this.setText('function example() {\n  const value = 12;\n}\nafter();');
+						this.fold.onChange.filter(() => !!this.fold.range(0)).take(1).subscribe(() => {
+							const start = this.getText().indexOf('12');
+							this.edit.replace('42', { start, end: start + 2 });
+						});
+					}
+				});
+			});
+		it.afterAll(() => foldEditFigure);
 		it.testElement('does not fold parentheses without fold metadata', async (a: TestApi) => {
 			for (const value of ['invoke(\n  hidden\n);', 'invoke(\n  hidden']) {
 				const { source } = await createSourceEditor(a, value);
