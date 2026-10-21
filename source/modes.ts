@@ -4,6 +4,8 @@ import { type SourceHighlighter } from './highlight.js';
 const modules = {
 	javascript: () => import('@cxl/gbc.javascript/highlight.js'),
 	typescript: () => import('@cxl/gbc.typescript/highlight.js'),
+	jsx: () => import('@cxl/gbc.javascript/highlight.js'),
+	tsx: () => import('@cxl/gbc.typescript/highlight.js'),
 	html: () => import('@cxl/gbc.html/highlight.js'),
 	json: () => import('@cxl/gbc.json/highlight.js'),
 	gb: () => import('@cxl/gbc.compiler/highlight.js'),
@@ -28,7 +30,8 @@ export function loadSourceHighlighter(mode: string): Promise<SourceHighlighter |
 			return languages.get(aliases[tag] ?? tag);
 		};
 		const ready = Promise.all(Object.entries(modules).map(async ([name, load]) => {
-			languages.set(name, (await load()).highlight({ resolveLanguage }));
+			const options = { resolveLanguage, jsx: name === 'jsx' || name === 'tsx' };
+			languages.set(name, (await load()).highlight(options));
 		}));
 		for (const name of Object.keys(modules))
 			pending.set(name, ready.then(() => languages.get(name)));

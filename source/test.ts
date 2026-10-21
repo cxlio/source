@@ -1125,6 +1125,8 @@ export default spec('@cxl/ui.source', a => {
 			for (const [mode, value, kind] of [
 				['javascript', 'const value = 1;', 'keyword'],
 				['typescript', 'interface Value {}', 'keyword'],
+				['jsx', 'const view = <Box />;', 'keyword'],
+				['tsx', 'const view: unknown = <Box />;', 'keyword'],
 				['html', '<main title="hello">text</main>', 'punctuation'],
 				['json', '{"value": 1}', 'punctuation'],
 			] as const) {
@@ -1146,6 +1148,50 @@ export default spec('@cxl/ui.source', a => {
 				a.assert(scanner);
 				a.equal(highlightKind([...fullScan(scanner, value)][0]), mode === 'markdown' ? 'heading' : 'keyword');
 			}
+		});
+
+		it.testElement('highlights JSX and TSX in both components and preserves edits and mode switching', async (a: TestApi) => {
+			const code = await createCode(a, '');
+			const { source } = await createSourceEditor(a, '');
+			source.setAttribute('aria-label', 'JSX source');
+			for (const mode of ['jsx', 'tsx']) {
+				const value = mode === 'tsx' ? 'const view: unknown = <Box title="hi">\n{name as string}\n</Box>;' : 'const view = <Box title="hi">\n{name}\n</Box>;';
+				for (const element of [code, source]) {
+					element.setAttribute('mode', mode);
+					element.setText(value);
+				}
+				await loadSourceHighlighter(mode);
+				await a.sleep(40);
+				for (const element of [code, source]) {
+					a.equal(highlightKind(element.getTokenAt(value.indexOf('Box') + 1)), 'tag');
+					a.equal(highlightKind(element.getTokenAt(value.indexOf('title') + 1)), 'attribute');
+					a.equal(element.getText(), value);
+					if (mode === 'tsx') a.equal(highlightKind(element.getTokenAt(value.indexOf('string') + 1)), 'type');
+				}
+				a.equal(source.fold.ranges.length, 1);
+				const spans = [...(code.shadowRoot?.querySelectorAll('span') ?? [])];
+				const tag = spans.find(span => span.textContent === 'Box');
+				const attribute = spans.find(span => span.textContent === 'title');
+				a.assert(tag && attribute);
+				a.equal(getComputedStyle(tag).color, 'rgb(109, 76, 65)');
+				a.equal(getComputedStyle(attribute).color, 'rgb(13, 71, 161)');
+				a.equal(code.shadowRoot?.querySelector('code')?.textContent, value);
+				const start = value.indexOf('name');
+				source.edit.replace('42', { start, end: start + 4 });
+				code.setText(source.getText());
+				await a.sleep(40);
+				for (const element of [code, source]) {
+					a.equal(highlightKind(element.getTokenAt(start + 1)), 'number');
+					element.mode = mode === 'jsx' ? 'javascript' : 'typescript';
+				}
+				await a.sleep(40);
+				for (const element of [code, source])
+					a.ok(highlightKind(element.getTokenAt(value.indexOf('Box') + 1)) !== 'tag');
+			}
+			code.mode = source.mode = 'tsx';
+			await a.sleep(40);
+			await a.a11y(code);
+			await a.a11y(source);
 		});
 
 		it.should('highlights JSON values and nested fold boundaries', async (a: TestApi) => {
@@ -1212,6 +1258,8 @@ export default spec('@cxl/ui.source', a => {
 				['cjs', 'const value = 1;', 'keyword'],
 				['typescript', 'interface Value {}', 'keyword'],
 				['ts', 'interface Value {}', 'keyword'],
+				['jsx', 'const view = <Box title="hi">{name}</Box>;', 'keyword'],
+				['tsx', 'const view: unknown = <Box title="hi">{name as string}</Box>;', 'keyword'],
 				['json', '{"value": true}', 'punctuation'],
 				['html', '<main>value</main>', 'punctuation'],
 				['gb', 'main { value = 1 }', 'keyword'],
@@ -1226,6 +1274,10 @@ export default spec('@cxl/ui.source', a => {
 					const embedded = tokens.find(token => token.start === start);
 					a.equal(highlightKind(embedded), kind, tag);
 					a.equal(embedded?.line, 3, tag);
+					if (tag === 'jsx' || tag === 'tsx') {
+						a.equalValues(tokens.filter(token => highlightKind(token) === 'tag').map(token => value.slice(token.start, token.end)), ['Box', 'Box']);
+						a.equalValues(tokens.filter(token => highlightKind(token) === 'attribute').map(token => value.slice(token.start, token.end)), ['title']);
+					}
 					let end = 0;
 					for (const token of tokens) {
 						a.ok(token.start >= end && token.end > token.start && token.end <= value.length, tag);
@@ -1579,6 +1631,7 @@ export default spec('@cxl/ui.source', a => {
 			{ name: 'syntax-highlighting', examples: { typescript: value }, width: 320, height: 296, rowHeight: 144, columns: 1 },
 			{ name: 'markdown-fences', examples: { markdown: '# Embedded code\n```mjs\nconst value = 42;\n// highlighted body\n```' }, width: 648, height: 160, rowHeight: 160, columns: 2 },
 			{ name: 'additional-modes', examples: ModeExamples, width: 648, height: 408, rowHeight: 96, columns: 2 },
+			{ name: 'jsx-tsx-modes', examples: { jsx: 'const view = <Box title="hi">\n  {name}\n</Box>;', tsx: 'const view: unknown = <Box>\n  {name as string}\n</Box>;' }, width: 648, height: 200, rowHeight: 96, columns: 2 },
 			{ name: 'incremental-highlighting', examples: { javascript: 'const value = 1;\n/* note\n * details\n */\nvalue;\n' }, width: 648, height: 160, rowHeight: 160, columns: 2 },
 		]) {
 			let started = false;
