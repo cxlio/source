@@ -261,6 +261,12 @@ function selectionRange({ anchor, head }: SourceSelection): SourceRange {
 	return { start: Math.min(anchor, head), end: Math.max(anchor, head) };
 }
 
+function selectionRangesOverlap(left: SourceRange, right: SourceRange): boolean {
+	return left.start < right.end ||
+		(left.start === left.end && left.start >= right.start && left.start <= right.end) ||
+		(right.start === right.end && right.start >= left.start && right.start <= left.end);
+}
+
 /**
  * Displays a large text buffer with incremental editing and viewport rendering.
  * Native text input, selection, and composition are synchronized with the
@@ -1290,20 +1296,41 @@ canvas {
 		const prefix = (line: number) => this.buffer.getLine(line).match(/^[\t ]*/)?.[0] ?? '';
 		const edits: { start: number; end: number; text: string; indexes?: number[]; caret?: number }[] = [];
 		let previousIndent: { line: number; column: number } | undefined;
+		const indentLine = (line: number) => {
+			const leading = prefix(line);
+			let column = width(leading);
+			if (command === 'more') column += size;
+			else if (command === 'less') column = Math.max(0, Math.floor((column - 1) / size) * size);
+			else {
+				column = 0;
+				if (this.buffer.getLine(line).trim()) {
+					let previous = line - 1;
+					while (previous >= 0 && !this.buffer.getLine(previous).trim()) previous--;
+					if (previous >= 0) column = previousIndent?.line === previous
+						? previousIndent.column : width(prefix(previous));
+					previousIndent = { line, column };
+				}
+			}
+			const start = this.buffer.lineRange(line).start;
+			edits.push({ start, end: start + leading.length, text: indentation(column) });
+		};
+		const insertLine = ({ last, indexes }: typeof targets[number], range: SourceRange) => {
+			const next = this.buffer.lineRange(last + 1).start;
+			const hasNext = last + 1 < this.buffer.getLineCount();
+			const newline = hasNext
+				? this.buffer.getText(range.end, next)
+				: last > 0
+					? this.buffer.getText(this.buffer.lineRange(last - 1).end, this.buffer.lineRange(last).start)
+					: '\n';
+			const indent = indentation(width(prefix(last)));
+			const start = hasNext ? next : range.end;
+			edits.push({ start, end: start, text: hasNext ? indent + newline : newline + indent,
+				indexes, caret: hasNext ? indent.length : newline.length + indent.length });
+		};
 		for (const group of groups) {
 			const range = this.buffer.lineRange(group.first, group.last);
 			if (command === 'insert') {
-				const next = this.buffer.lineRange(group.last + 1).start;
-				const hasNext = group.last + 1 < this.buffer.getLineCount();
-				const newline = hasNext
-					? this.buffer.getText(range.end, next)
-					: group.last > 0
-						? this.buffer.getText(this.buffer.lineRange(group.last - 1).end, this.buffer.lineRange(group.last).start)
-						: '\n';
-				const indent = indentation(width(prefix(group.last)));
-				const start = hasNext ? next : range.end;
-				edits.push({ start, end: start, text: hasNext ? indent + newline : newline + indent,
-					indexes: group.indexes, caret: hasNext ? indent.length : newline.length + indent.length });
+				insertLine(group, range);
 			} else if (command === 'remove') {
 				const hasNext = group.last + 1 < this.buffer.getLineCount();
 				edits.push({
@@ -1312,27 +1339,13 @@ canvas {
 					text: '',
 				});
 			} else for (let line = group.first; line <= group.last; line++) {
-				const leading = prefix(line);
-				let column = width(leading);
-				if (command === 'more') column += size;
-				else if (command === 'less') column = Math.max(0, Math.floor((column - 1) / size) * size);
-				else {
-					column = 0;
-					if (this.buffer.getLine(line).trim()) {
-						let previous = line - 1;
-						while (previous >= 0 && !this.buffer.getLine(previous).trim()) previous--;
-						if (previous >= 0) column = previousIndent?.line === previous
-							? previousIndent.column : width(prefix(previous));
-						previousIndent = { line, column };
-					}
-				}
-				const start = this.buffer.lineRange(line).start;
-				edits.push({ start, end: start + leading.length, text: indentation(column) });
+				indentLine(line);
 			}
 		}
 		let selections = before;
 		const changes: SourceChange[] = [];
-		for (const edit of edits.reverse()) {
+		edits.reverse();
+		for (const edit of edits) {
 			if (this.buffer.getText(edit.start, edit.end) === edit.text) continue;
 			const change = this.replace(edit.start, edit.end, edit.text);
 			changes.push(change);
@@ -1407,15 +1420,7 @@ canvas {
 		const groups: { indexes: number[]; range: SourceRange }[] = [];
 		for (const entry of entries) {
 			const previous = groups.at(-1);
-			const overlaps =
-				previous &&
-				(entry.range.start < previous.range.end ||
-					(entry.range.start === entry.range.end &&
-						entry.range.start >= previous.range.start &&
-						entry.range.start <= previous.range.end) ||
-					(previous.range.start === previous.range.end &&
-						previous.range.start >= entry.range.start &&
-						previous.range.start <= entry.range.end));
+			const overlaps = previous && selectionRangesOverlap(entry.range, previous.range);
 			if (overlaps) {
 				previous.range = {
 					start: Math.min(previous.range.start, entry.range.start),
