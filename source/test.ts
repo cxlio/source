@@ -3364,6 +3364,61 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			a.equal(await editorValue(a, target), 'one\ntwo\n!three');
 		});
 
+		for (const ready of [false, true]) for (const paint of [false, true])
+			it.testElement(`preserves vertical preference with ready=${ready}, paint=${paint}`, async a => {
+				const source = a.element(Source);
+				source.style.cssText = 'display:block;width:600px;height:240px;font:12px monospace';
+				source.setText('  one.two  three!\n  four five\n\nsix');
+				if (ready) await a.sleep(75);
+				source.cursor.go(15);
+				source.cursorY.next();
+				a.equal(source.cursor.index, 29);
+				if (paint) await a.sleep(40);
+				source.cursorY.previous();
+				a.equal(source.cursor.index, 15, 'short-line roundtrip');
+				for (let i = 0; i < 3; i++) source.cursorY.next();
+				a.equal(source.cursorY.index, 3);
+				for (let i = 0; i < 3; i++) source.cursorY.previous();
+				a.equal(source.cursor.index, 15, 'empty-line roundtrip');
+				source.cursorY.next();
+				source.cursorX.previous();
+				source.cursorY.previous();
+				a.equal(source.cursor.index, 10, 'horizontal motion resets preference');
+				source.selection.set(2);
+				source.cursorY.next();
+				a.equal(source.cursor.index, 20, 'explicit selection resets preference');
+				source.edit.replace('!');
+				await a.sleep(40);
+				source.cursorY.previous();
+				a.equal(source.cursor.index, 3, 'editing resets preference');
+			});
+
+		it.testElement('preserves vertical preference through repeated keyboard input', async a => {
+			const { source, target } = await createSourceEditor(a, '  one.two  three!\n  four five\n\nsix');
+			source.cursor.go(15);
+			await editorAction(a, target, 'press', 'ArrowDown');
+			await editorAction(a, target, 'press', 'ArrowDown');
+			await editorAction(a, target, 'press', 'ArrowUp');
+			await editorAction(a, target, 'press', 'ArrowUp');
+			a.equal(source.cursor.index, 15);
+			for (const key of ['ArrowDown', 'ArrowDown', 'ArrowUp', 'ArrowUp'])
+				target.dispatchEvent(new KeyboardEvent('keydown', { key, repeat: true, bubbles: true, composed: true, cancelable: true }));
+			a.equal(source.cursor.index, 15, 'rapid repeated keydown roundtrip');
+		});
+
+		for (const value of ['\talpha e\u0301 😀 omega', 'alpha\tbeta'])
+			it.testElement(`preserves measured vertical preference for ${value}`, async a => {
+				const { source } = await createSourceEditor(a, `${value}\nx\n\n${value}`);
+				const start = value.length;
+				source.cursor.go(start);
+				const before = source.geometry.caret(start);
+				for (let i = 0; i < 3; i++) source.cursorY.next();
+				a.equal(source.cursor.position().ch, start);
+				for (let i = 0; i < 3; i++) source.cursorY.previous();
+				a.equal(source.cursor.index, start);
+				a.equalValues(source.geometry.caret(start), before, 'caret geometry is unchanged');
+			});
+
 		it.testElement('moves the line cursor across wrapped visual rows', async a => {
 			const { source } = await createSourceEditor(
 				a,
@@ -3377,6 +3432,11 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			a.ok(wrapped.ch > 0, 'cursor advances within the wrapped line');
 			source.cursorY.previous();
 			a.equal(source.cursor.index, 0);
+			source.cursor.go(5);
+			source.cursorY.next();
+			a.equal(source.cursorY.index, 0);
+			source.cursorY.previous();
+			a.equal(source.cursor.index, 5);
 		});
 
 		it.testElement('renders block selections across wrapped rows', async (a: TestApi) => {
@@ -4138,6 +4198,21 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			source.fold.close(-1);
 			source.fold.open(99);
 			a.ok(source.fold.ranges.every(range => range.closed));
+		});
+
+		it.testElement('preserves preferred position across a closed fold and short line', async a => {
+			const source = await createFoldEditor(a, 'long first line\n{\nhidden\n}\nlong last line');
+			source.fold.close(1);
+			await a.sleep(40);
+			source.cursor.go(12);
+			source.cursorY.next();
+			a.equal(source.cursorY.index, 3);
+			source.cursorY.next();
+			a.equal(source.cursor.position().ch, 12);
+			source.cursorY.previous();
+			source.cursorY.previous();
+			a.equal(source.cursor.index, 12);
+			a.ok(source.fold.ranges[0]?.closed, 'navigation keeps the fold closed');
 		});
 
 		it.testElement('keeps navigation and selections in document coordinates', async (a: TestApi) => {

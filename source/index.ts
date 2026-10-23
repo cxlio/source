@@ -569,6 +569,7 @@ export class Source extends Code {
 	protected readonly hitTest = new HitTest(this.text);
 	protected readonly geometryFeature = sourceGeometry(this.buffer, this.text, this.host, this.folding);
 	protected preferredX?: number;
+	protected preferredIndex?: number;
 	protected readonly decorationRenderer = sourceDecorations(
 		this.host,
 		range => {
@@ -1163,11 +1164,12 @@ canvas {
 	}
 
 	protected moveVertical(direction: -1 | 1) {
+		const origin = this.preferredIndex ??= this.selectionHead;
 		const position = this.buffer.positionAt(this.selectionHead);
 		const caret = this.text.getCaret(position);
+		const x = this.preferredX ?? this.text.getCaret(this.buffer.positionAt(origin))?.x;
 		let next: number | undefined;
-		if (caret) {
-			const x = this.preferredX ?? caret.x;
+		if (caret && x !== undefined) {
 			this.preferredX = x;
 			const hit = this.hitTest.getCaretAtPosition(
 				x,
@@ -1176,7 +1178,7 @@ canvas {
 			if (hit) next = this.buffer.indexAt(hit.position);
 		}
 		if (next === undefined || next === this.selectionHead)
-			next = this.folding.indexAt(this.folding.lineAt(this.folding.rowAt(position.line) + direction), this.folding.columnAt(this.selectionHead));
+			next = this.folding.indexAt(this.folding.lineAt(this.folding.rowAt(position.line) + direction), this.folding.columnAt(origin));
 		this.setSelectionState(next, next, true, true);
 	}
 
@@ -1762,7 +1764,7 @@ canvas {
 		preservePreferredX = false,
 	) {
 		this.activeSearch = undefined;
-		if (!preservePreferredX) this.preferredX = undefined;
+		if (!preservePreferredX) this.preferredX = this.preferredIndex = undefined;
 		const next = (selections.length ? selections : [DefaultSelection]).map(
 			({ anchor, head }) => ({
 				anchor: this.clampSelection(anchor),
