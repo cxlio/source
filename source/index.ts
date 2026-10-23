@@ -711,7 +711,7 @@ canvas {
 					const { buffer } = $;
 					const host = $.host;
 					const text = $.text;
-					const cursor = sourceCursor(host);
+					const cursor = sourceCursor(host, text.canvas);
 					const hitTest = $.hitTest;
 					const input = createTextInput($, host);
 					const paste = input.element === input.clipboardElement

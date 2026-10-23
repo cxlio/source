@@ -3292,6 +3292,53 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			a.equal(await editorValue(a, target), 'aXlpha', 'caret position preserved');
 		});
 
+		it.testElement('uses caret-color with a text color fallback', async (a: TestApi) => {
+			const { source, target } = await createSourceEditor(a, 'alpha');
+			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="cursor"]');
+			a.assert(canvas);
+			for (const [color, expected] of [
+				['rgb(240, 20, 30)', '#f0141e'],
+				['auto', '#010203'],
+				['currentColor', '#010203'],
+			] as const) {
+				source.style.color = 'rgb(1, 2, 3)';
+				source.style.caretColor = color;
+				source.style.width = `${320 + color.length}px`;
+				await a.sleep(50);
+				await editorAction(a, target, 'press', 'ArrowRight');
+				a.equal(canvas.getContext('2d')?.fillStyle, expected);
+			}
+		});
+
+		it.testElement('keeps glyphs visible beneath multiple fat carets', async (a: TestApi) => {
+			const { source, target } = await createSourceEditor(a, 'M\nM');
+			source.style.color = 'black';
+			source.fatCursor = true;
+			const text = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="text"]');
+			const cursor = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="cursor"]');
+			a.assert(text && cursor);
+			for (const [color, expected] of [['black', 255], ['white', 0]] as const) {
+				source.style.caretColor = color;
+				source.style.width = color === 'black' ? '321px' : '320px';
+				await a.sleep(50);
+				await editorAction(a, target, 'press', 'Home');
+				source.selection.block(0, 2);
+				await a.sleep(20);
+				const glyphs = text.getContext('2d')?.getImageData(0, 0, text.width, text.height).data;
+				const overlay = cursor.getContext('2d')?.getImageData(0, 0, cursor.width, cursor.height).data;
+				a.assert(glyphs && overlay);
+				const rows = new Set<number>();
+				let legible = true;
+				for (let i = 0; i < glyphs.length; i += 4) {
+					if (glyphs[i + 3] !== 255) continue;
+					rows.add(Math.floor(i / 4 / text.width));
+					if (overlay[i] !== expected || overlay[i + 3] !== 255) legible = false;
+				}
+				a.ok(rows.size > 1, 'checks painted glyphs on both rows');
+				a.ok(legible, 'covered glyphs contrast with the block cursor');
+			}
+		});
+
 		it.testElement('supports a fat cursor', async (a: TestApi) => {
 			const { source, target } = await createSourceEditor(a, 'alpha');
 			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>(
