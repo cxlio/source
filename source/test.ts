@@ -1131,6 +1131,247 @@ export default spec('@cxl/ui.source', a => {
 		}
 	});
 
+	a.test('viewport cursors', it => {
+		it.testElement('uses one navigation contract with pixel-based scroll cursors', async (a: TestApi) => {
+			const { source } = await createSourceEditor(a, 'line\n'.repeat(100));
+			const selection = source.selection.ranges();
+			source.scrollY.go(20);
+			a.equal(source.scrollY.index, 20);
+			source.scrollY.next(5);
+			source.scrollY.previous(2);
+			a.equal(source.scrollY.index, 23);
+			source.scrollY.nextPage(0.5);
+			a.equal(source.scrollY.index, 23 + source.clientHeight / 2);
+			source.scrollY.previousPage(0.5);
+			a.equal(source.scrollY.index, 23);
+			a.equal(source.scrollY.getVisibleFirst(), 23);
+			a.equal(source.scrollY.getVisibleMiddle(), 23 + source.clientHeight / 2);
+			a.equal(source.scrollY.getVisibleLast(), 23 + source.clientHeight);
+			a.equalValues(source.scrollY.range(30, 10), { start: 10, end: 30 });
+			source.scrollY.go(NaN);
+			a.equal(source.scrollY.index, 23);
+			source.scrollY.goEnd();
+			a.equal(source.scrollY.index, source.scrollHeight - source.clientHeight);
+			source.scrollY.nextPage();
+			a.equal(source.scrollY.index, source.scrollHeight - source.clientHeight);
+			source.scrollY.goStart();
+			source.scrollY.previous();
+			a.equal(source.scrollY.index, 0);
+			source.scrollX.goEnd();
+			a.equal(source.scrollX.index, Math.max(0, source.scrollWidth - source.clientWidth));
+			source.scrollX.goStart();
+			a.equal(source.scrollX.getVisibleFirst(), 0);
+			a.equal(source.scrollX.getVisibleLast(), source.clientWidth);
+			a.equalValues(source.selection.ranges(), selection);
+		});
+
+		it.testElement('maps measured viewport targets into each cursor unit without reading or measuring text', async (a: TestApi) => {
+			const source = a.element(Source);
+			source.style.cssText = 'display:block;width:320px;height:100px;font:12px/20px monospace';
+			source.mode = 'javascript';
+			source.setText('value;\n'.repeat(100));
+			await a.sleep(100);
+			const read = Buffer.prototype.getText;
+			const measure = Range.prototype.getBoundingClientRect;
+			Buffer.prototype.getText = () => { throw new Error('viewport queries must not read text'); };
+			Range.prototype.getBoundingClientRect = () => { throw new Error('viewport queries must not measure text'); };
+			try {
+				a.equal(source.cursorY.getVisibleFirst(), 0);
+				a.equal(source.cursorY.getVisibleMiddle(), 2);
+				a.equal(source.cursorY.getVisibleLast(), 4);
+				a.equal(source.cursor.getVisibleFirst(), 0);
+				a.equal(source.cursor.getVisibleMiddle(), 14);
+				a.equal(source.cursor.getVisibleLast(), 34);
+				a.equal(source.cursorX.getVisibleFirst(), 0);
+				a.equal(source.cursorX.getVisibleLast(), 6);
+				a.equal(source.cursorToken.getVisibleFirst(), 0);
+				a.ok((source.cursorToken.getVisibleMiddle() ?? 0) > 0);
+			} finally {
+				Buffer.prototype.getText = read;
+				Range.prototype.getBoundingClientRect = measure;
+			}
+			source.scrollY.go(10);
+			a.equal(source.cursorY.getVisibleFirst(), undefined, 'a pending scroll invalidates text targets');
+			await a.sleep(75);
+			a.equal(source.cursorY.getVisibleFirst(), 1);
+			a.equal(source.cursorY.getVisibleLast(), 4);
+			a.equal(source.cursor.index, 0);
+		});
+
+		it.testElement('handles unavailable geometry empty documents and font invalidation', async (a: TestApi) => {
+			const detached = new Source();
+			for (const cursor of [detached.cursor, detached.cursorX, detached.cursorY, detached.cursorToken, detached.scrollX, detached.scrollY]) {
+				a.equal(cursor.getVisibleFirst(), undefined);
+				a.equal(cursor.getVisibleMiddle(), undefined);
+				a.equal(cursor.getVisibleLast(), undefined);
+			}
+			const { source } = await createSourceEditor(a, '');
+			a.equal(source.cursorY.getVisibleFirst(), 0);
+			a.equal(source.cursorY.getVisibleMiddle(), 0);
+			a.equal(source.cursorY.getVisibleLast(), 0);
+			source.setText('line\n'.repeat(100));
+			await a.sleep(75);
+			const before = (source.cursorY.getVisibleLast() ?? 0) - (source.cursorY.getVisibleFirst() ?? 0);
+			source.style.font = '24px/32px monospace';
+			a.equal(source.cursorY.getVisibleLast(), undefined);
+			await a.sleep(100);
+			const after = (source.cursorY.getVisibleLast() ?? 100) - (source.cursorY.getVisibleFirst() ?? 0);
+			a.ok(after < before, `larger fonts fit fewer logical lines: ${before} -> ${after}`);
+			source.remove();
+			a.equal(source.cursorY.getVisibleFirst(), undefined);
+		});
+
+		it.testElement('targets visible logical lines through wrapping and collapsed folds', async (a: TestApi) => {
+			const source = await createFoldEditor(a, '{\nhidden\nhidden\n}\n' + 'visible\n'.repeat(30));
+			source.fold.close(0);
+			await a.sleep(75);
+			a.equal(source.cursorY.getVisibleFirst(), 0);
+			a.ok((source.cursorY.getVisibleMiddle() ?? 0) >= 4);
+			a.equal(source.fold.range(0)?.closed, true);
+			source.setText('wrapped '.repeat(200));
+			await a.sleep(75);
+			source.scrollY.go(40);
+			await a.sleep(75);
+			a.equal(source.cursorY.getVisibleFirst(), 0);
+			a.equal(source.cursorY.getVisibleLast(), 0);
+			a.ok((source.cursor.getVisibleFirst() ?? 0) > 0, 'oversized lines use their measured visible screen rows');
+			a.ok((source.cursor.getVisibleLast() ?? 0) > (source.cursor.getVisibleFirst() ?? 0));
+		});
+
+		it.testElement('supports explicit reveal alignment and suppresses automatic revealing', async (a: TestApi) => {
+			const { source } = await createSourceEditor(a, 'value\n'.repeat(300));
+			source.cursorY.go(150, { reveal: false });
+			await a.sleep(75);
+			a.equal(source.scrollY.index, 0);
+			a.equal(source.cursorY.index, 150);
+			for (const reveal of ['start', 'middle', 'end'] as const) {
+				source.cursorY.go(150, { reveal });
+				await a.sleep(150);
+				const caret = source.geometry.caret(source.cursor.index);
+				a.assert(caret.status === 'visible');
+				const top = caret.bounds.y - source.getBoundingClientRect().y;
+				const expected = reveal === 'start' ? 0 : (source.clientHeight - caret.bounds.height) * (reveal === 'middle' ? 0.5 : 1);
+				a.ok(Math.abs(top - expected) < 2, `${reveal} alignment is measured`);
+			}
+			source.cursorY.go(200, { reveal: 'middle' });
+			source.cursorY.go(25, { reveal: 'middle' });
+			await a.sleep(150);
+			a.equal(source.cursorY.index, 25);
+			a.equal(source.geometry.caret(source.cursor.index).status, 'visible');
+			const scroll = source.scrollY.index;
+			source.cursorX.go(2, { reveal: 'start' });
+			await a.sleep(75);
+			a.equal(source.scrollY.index, scroll, 'horizontal alignment does not realign the vertical viewport');
+		});
+
+		it.testElement('keeps the cursor visible on request without changing text or history', async (a: TestApi) => {
+			const { source } = await createSourceEditor(a, 'value\n'.repeat(300));
+			source.scrollY.nextPage(1, { keepCursorVisible: true });
+			await a.sleep(100);
+			a.ok(source.cursorY.index > 0);
+			a.equal(source.geometry.caret(source.cursor.index).status, 'visible');
+			source.scrollY.goStart();
+			await a.sleep(75);
+			const index = source.cursor.index;
+			source.scrollY.nextPage();
+			await a.sleep(75);
+			a.equal(source.cursor.index, index, 'scrolling preserves selection by default');
+			source.history.undo();
+			a.equal(source.getText(), 'value\n'.repeat(300));
+		});
+
+		it.testElement('accumulates native held-key scroll bindings', async (a: TestApi) => {
+			const { source, target } = await createSourceEditor(a, 'value\n'.repeat(300));
+			let repeated = false;
+			const key = (event: KeyboardEvent) => {
+				if (event.key !== 'j') return;
+				event.preventDefault();
+				event.stopImmediatePropagation();
+				repeated ||= event.repeat;
+				source.scrollY.nextPage(0.5);
+			};
+			source.addEventListener('keydown', key, true);
+			try {
+				target.focus();
+				for (let i = 0; i < 4; i++) await editorAction(a, target, 'keyDown', 'j');
+				await editorAction(a, target, 'keyUp', 'j');
+				await a.sleep(100);
+				a.ok(repeated, 'native repeat events reach the binding');
+				a.ok(source.scrollY.index > source.clientHeight);
+				a.equal(source.cursor.index, 0);
+				a.equal(source.getText(), 'value\n'.repeat(300));
+			} finally {
+				source.removeEventListener('keydown', key, true);
+			}
+		});
+
+		it.testElement('restores temporary reveal options when a public selection listener throws', async (a: TestApi) => {
+			for (const repeat of [false, true]) {
+				const { source } = await createSourceEditor(a, 'value\n'.repeat(300));
+				const subscription = source.selection.onChange.subscribe(() => { throw new Error('listener failure'); });
+				a.throws(() => repeat ? source.cursorY.nextPage(1, { reveal: false }) : source.cursorY.go(150, { reveal: false }));
+				subscription.unsubscribe();
+				source.cursorY.go(150);
+				await a.sleep(150);
+				a.equal(source.geometry.caret(source.cursor.index).status, 'visible');
+			}
+		});
+
+		it.testElement('lets newer selection commands cancel pending scroll relocation', async (a: TestApi) => {
+			const { source } = await createSourceEditor(a, 'value\n'.repeat(300));
+			source.scrollY.nextPage(1, { keepCursorVisible: true });
+			source.cursorY.go(0, { reveal: false });
+			await a.sleep(100);
+			a.equal(source.cursorY.index, 0);
+		});
+
+		it.testElement('relocates the cursor within an oversized wrapped logical line', async (a: TestApi) => {
+			const { source } = await createSourceEditor(a, 'wrapped '.repeat(1000));
+			source.scrollY.nextPage(0.5, { keepCursorVisible: true });
+			await a.sleep(100);
+			a.equal(source.cursorY.index, 0);
+			a.ok(source.cursor.index > 0);
+			a.equal(source.geometry.caret(source.cursor.index).status, 'visible');
+			source.cursor.go(7000, { reveal: 'middle' });
+			await a.sleep(150);
+			source.scrollY.previousPage(1, { keepCursorVisible: true });
+			await a.sleep(100);
+			a.equal(source.geometry.caret(source.cursor.index).status, 'visible', 'reverse scrolling relocates onto the last fully visible screen row');
+		});
+
+		it.testElement('reveals a distant document offset inside one wrapped logical line', async (a: TestApi) => {
+			const value = 'wrapped '.repeat(1000);
+			const { source } = await createSourceEditor(a, value);
+			source.cursor.go(value.length - 80, { reveal: 'middle' });
+			await a.sleep(150);
+			a.equal(source.geometry.caret(source.cursor.index).status, 'visible');
+		});
+
+		const figure = it.figure('viewport-cursors',
+			'<div style="display:grid;gap:16px;padding:16px;background:#fff;color:#111">' +
+			['wrapped', 'folded', 'variable'].map(kind => `<div><strong>${kind}</strong><c-source-viewport-${kind}></c-source-viewport-${kind}></div>`).join('') + '</div>',
+			() => {
+				for (const kind of ['wrapped', 'folded', 'variable']) {
+					const tag = `c-source-viewport-${kind}`;
+					if (customElements.get(tag)) continue;
+					customElements.define(tag, class extends Source {
+						constructor() {
+							super();
+							this.style.cssText = 'display:block;width:240px;height:180px;font:14px/20px monospace;background:#fff;color:#111';
+							this.gutters = [lineNumbers()];
+							if (kind === 'folded') {
+								this.highlighter = foldHighlighter;
+								this.fold.onChange.filter(() => !!this.fold.range(0)).take(1).subscribe(() => this.fold.close(0));
+								this.setText('{\n hidden\n hidden\n}\n' + 'visible\n'.repeat(20));
+							} else this.setText(kind === 'wrapped' ? 'wrapped content '.repeat(80)
+								: Array.from({ length: 30 }, (_, line) => `${line + 1} ${'variable '.repeat(line % 5)}`).join('\n'));
+						}
+					});
+				}
+			});
+		it.afterAll(() => figure);
+	});
+
 	a.test('geometry', it => {
 		it.testElement('exposes viewport anchors and wrapped tab fragments without side effects', async (a: TestApi) => {
 			const value = `a\tb ${'wrapped '.repeat(18)}\nlast`;
@@ -2383,6 +2624,18 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			]);
 		});
 
+		it.testElement('registers unified viewport cursors through the public Source API', async (a: TestApi) => {
+			const source = a.element('c-source');
+			a.assert(source instanceof Source);
+			a.ok(Reflect.has(source, 'scrollX'), 'horizontal scroll cursor is available');
+			a.ok(Reflect.has(source, 'scrollY'), 'vertical scroll cursor is available');
+			for (const cursor of [source.cursor, source.cursorX, source.cursorY, source.cursorToken]) {
+				a.ok(Reflect.has(cursor, 'getVisibleFirst'));
+				a.ok(Reflect.has(cursor, 'getVisibleMiddle'));
+				a.ok(Reflect.has(cursor, 'getVisibleLast'));
+			}
+		});
+
 		it.testElement('navigates the public cursor by index and position', async a => {
 			const { source } = await createSourceEditor(a, 'one\ntwo\nthree');
 			const cursor: {
@@ -3559,7 +3812,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			await editorAction(a, target, 'press', 'PageDown');
 			await a.sleep(50);
 			a.ok(source.scrollTop > 0, 'caret navigation scrolls the viewport');
-			a.ok(source.cursorY.getVisibleFirst() > 0, 'visible first line updates');
+			a.ok((source.cursorY.getVisibleFirst() ?? 0) > 0, 'visible first line updates');
 		});
 
 		it.testElement('select text with a real pointer drag', async (a: TestApi) => {

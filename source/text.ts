@@ -504,7 +504,18 @@ export function textCanvas(host: HTMLElement) {
 			const ch = projectedIndex(sourceLine, position);
 			if (ch === undefined) continue;
 			const parts = [...sourceLine.lines];
-			const part = parts.find(item => ch >= item.startIndex && ch <= item.endIndex + 1) ?? parts.at(-1);
+			const part = parts.find(item => ch >= item.startIndex && (ch <= item.endIndex || ch === sourceLine.text.length && ch === item.endIndex + 1));
+			if (!part && sourceLine.text.length) {
+				textN.textContent = sourceLine.text;
+				const rect = getCharRect(Math.min(ch, sourceLine.text.length - 1));
+				return {
+					x: rect.x - host.getBoundingClientRect().x + (ch === sourceLine.text.length ? rect.width : 0),
+					y: sourceLine.offsetTop + rect.y - measureElement.getBoundingClientRect().y,
+					width: rect.width,
+					height: rect.height,
+					line: position.line,
+				};
+			}
 			return { ...caretRect(sourceLine, ch, part), line: position.line };
 		}
 	}
@@ -517,6 +528,33 @@ export function textCanvas(host: HTMLElement) {
 			if (!part && sourceLine.text.length) return;
 			return caretRect(sourceLine, ch, part, measureElement.offsetLeft);
 		}
+	}
+
+	function getVisiblePosition(fraction: 0 | 0.5 | 1, position?: TextPosition): TextPosition | undefined {
+		const entries = [...visibleParts];
+		if (position) {
+			const caret = getVisibleCaret(position);
+			if (!caret) return;
+			for (const [row, parts] of entries) {
+				if (projectedIndex(row, position) === undefined) continue;
+				const part = parts.find(part => row.offsetTop + part.y === caret.y);
+				if (!part) return getPosition(row, 0);
+				const x = measureElement.offsetLeft + (host.clientWidth - measureElement.offsetLeft) * fraction;
+				const index = part.chars.findIndex(char => char.x + char.width / 2 >= x);
+				return getPosition(row, index < 0 ? part.endIndex + 1 : part.startIndex + index);
+			}
+			return;
+		}
+		const full = entries.filter(([row]) => row.offsetTop + offsetY >= 0 && row.offsetTop + offsetY + row.height <= host.clientHeight);
+		const rows = (full.length ? full : entries).flatMap(([row, parts]) => parts.length
+			? parts.map(part => ({ row, start: part.startIndex, end: part.endIndex + 1, y: row.offsetTop + part.y + offsetY, height: part.height }))
+			: [{ row, start: 0, end: 0, y: row.offsetTop + offsetY, height: row.height }]);
+		const complete = rows.filter(row => row.y >= 0 && row.y + row.height <= host.clientHeight);
+		const available = complete.length ? complete : rows;
+		const target = fraction === 0 ? available[0] : fraction === 1 ? available.at(-1)
+			: available.reduce<typeof available[number] | undefined>((nearest, row) => !nearest ||
+				Math.abs(row.y + row.height / 2 - host.clientHeight / 2) < Math.abs(nearest.y + nearest.height / 2 - host.clientHeight / 2) ? row : nearest, undefined);
+		return target && getPosition(target.row, fraction === 1 ? target.end : target.start);
 	}
 
 	function getSelectionRects(
@@ -631,6 +669,7 @@ export function textCanvas(host: HTMLElement) {
 		commit,
 		getCaret,
 		getVisibleCaret,
+		getVisiblePosition,
 		getVisibleSelectionRects: (start: TextPosition, end: TextPosition) =>
 			getSelectionRects(start, end, visibleParts.keys(), line => visibleParts.get(line) ?? [], measureElement.offsetLeft),
 		getPosition,
