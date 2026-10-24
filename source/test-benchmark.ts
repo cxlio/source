@@ -241,6 +241,21 @@ export default spec('Source line rendering benchmarks', async s => {
 		a.equal(source.cursor.index, 15);
 	});
 
+	s.test('logical cursor roundtrip with endpoint correction', async a => {
+		const source = a.element(Source);
+		source.style.cssText = 'display:block;width:320px;height:160px;font:12px monospace';
+		source.setText('longer\nx\nlongest');
+		await a.sleep(75);
+		source.cursor.go(5);
+		await a.benchmark(() => {
+			source.cursorY.nextLogical();
+			source.cursor.goPreservingGoal(7);
+			source.cursorY.previousLogical();
+			return source.cursor.index;
+		}, { ...featureBenchmarkOptions, maxRegression: 25 });
+		a.equal(source.cursor.index, 5);
+	});
+
 	s.test('large-document cursor navigation', async a => {
 		const source = a.element(Source);
 		source.setText(createLargeSource(HistoryLineCount));

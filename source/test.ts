@@ -1238,14 +1238,23 @@ export default spec('@cxl/ui.source', a => {
 			a.ok((source.cursor.getVisibleLast() ?? 0) > (source.cursor.getVisibleFirst() ?? 0));
 		});
 
+		it.testElement('public navigation leaves the viewport unchanged', async a => {
+			const { source } = await createSourceEditor(a, 'value\n'.repeat(300));
+			source.cursorY.go(150);
+			await a.sleep(100);
+			a.equal(source.cursorY.index, 150);
+			a.equal(source.scrollY.index, 0);
+		});
+
 		it.testElement('supports explicit reveal alignment and suppresses automatic revealing', async (a: TestApi) => {
 			const { source } = await createSourceEditor(a, 'value\n'.repeat(300));
-			source.cursorY.go(150, { reveal: false });
+			source.cursorY.go(150);
 			await a.sleep(75);
 			a.equal(source.scrollY.index, 0);
 			a.equal(source.cursorY.index, 150);
 			for (const reveal of ['start', 'middle', 'end'] as const) {
-				source.cursorY.go(150, { reveal });
+				source.cursorY.go(150);
+				source.cursor.reveal(reveal);
 				await a.sleep(150);
 				const caret = source.geometry.caret(source.cursor.index);
 				a.assert(caret.status === 'visible');
@@ -1253,31 +1262,48 @@ export default spec('@cxl/ui.source', a => {
 				const expected = reveal === 'start' ? 0 : (source.clientHeight - caret.bounds.height) * (reveal === 'middle' ? 0.5 : 1);
 				a.ok(Math.abs(top - expected) < 2, `${reveal} alignment is measured`);
 			}
-			source.cursorY.go(200, { reveal: 'middle' });
-			source.cursorY.go(25, { reveal: 'middle' });
+			source.cursorY.go(200);
+			source.cursor.reveal('middle');
+			source.cursorY.go(25);
+			source.cursor.reveal('middle');
 			await a.sleep(150);
 			a.equal(source.cursorY.index, 25);
 			a.equal(source.geometry.caret(source.cursor.index).status, 'visible');
 			const scroll = source.scrollY.index;
-			source.cursorX.go(2, { reveal: 'start' });
+			source.cursorX.go(2);
+			source.cursor.reveal();
 			await a.sleep(75);
 			a.equal(source.scrollY.index, scroll, 'horizontal alignment does not realign the vertical viewport');
 		});
 
-		it.testElement('keeps the cursor visible on request without changing text or history', async (a: TestApi) => {
+		it.testElement('scrolling never relocates the cursor or changes history', async a => {
 			const { source } = await createSourceEditor(a, 'value\n'.repeat(300));
-			source.scrollY.nextPage(1, { keepCursorVisible: true });
-			await a.sleep(100);
-			a.ok(source.cursorY.index > 0);
-			a.equal(source.geometry.caret(source.cursor.index).status, 'visible');
-			source.scrollY.goStart();
-			await a.sleep(75);
-			const index = source.cursor.index;
 			source.scrollY.nextPage();
-			await a.sleep(75);
-			a.equal(source.cursor.index, index, 'scrolling preserves selection by default');
+			await a.sleep(100);
+			a.equal(source.cursor.index, 0);
 			source.history.undo();
 			a.equal(source.getText(), 'value\n'.repeat(300));
+		});
+
+		it.testElement('detached cursor methods are safe and reveal does not move or focus the cursor', async a => {
+			const detached = new Source();
+			detached.setText('longer\nx\nlongest');
+			detached.cursor.go(5);
+			detached.cursorY.nextLogical();
+			detached.cursor.goPreservingGoal(7);
+			detached.cursor.reveal();
+			detached.cursorY.previousLogical();
+			a.equal(detached.cursor.index, 5);
+			const { source } = await createSourceEditor(a, 'value\n'.repeat(300));
+			const button = a.element('button');
+			button.focus();
+			source.cursorY.go(150);
+			const selection = source.selection.ranges();
+			source.cursor.reveal();
+			a.equal(document.activeElement, button);
+			await a.sleep(150);
+			a.equalValues(source.selection.ranges(), selection);
+			a.equal(source.geometry.caret(source.cursor.index).status, 'visible');
 		});
 
 		it.testElement('accumulates native held-key scroll bindings', async (a: TestApi) => {
@@ -1305,44 +1331,32 @@ export default spec('@cxl/ui.source', a => {
 			}
 		});
 
-		it.testElement('restores temporary reveal options when a public selection listener throws', async (a: TestApi) => {
-			for (const repeat of [false, true]) {
-				const { source } = await createSourceEditor(a, 'value\n'.repeat(300));
-				const subscription = source.selection.onChange.subscribe(() => { throw new Error('listener failure'); });
-				a.throws(() => repeat ? source.cursorY.nextPage(1, { reveal: false }) : source.cursorY.go(150, { reveal: false }));
-				subscription.unsubscribe();
-				source.cursorY.go(150);
-				await a.sleep(150);
-				a.equal(source.geometry.caret(source.cursor.index).status, 'visible');
-			}
-		});
-
-		it.testElement('lets newer selection commands cancel pending scroll relocation', async (a: TestApi) => {
+		it.testElement('can reveal after a public selection listener throws', async a => {
 			const { source } = await createSourceEditor(a, 'value\n'.repeat(300));
-			source.scrollY.nextPage(1, { keepCursorVisible: true });
-			source.cursorY.go(0, { reveal: false });
-			await a.sleep(100);
-			a.equal(source.cursorY.index, 0);
+			const subscription = source.selection.onChange.subscribe(() => { throw new Error('listener failure'); });
+			a.throws(() => source.cursorY.go(150));
+			subscription.unsubscribe();
+			source.cursor.reveal();
+			await a.sleep(150);
+			a.equal(source.geometry.caret(source.cursor.index).status, 'visible');
 		});
 
-		it.testElement('relocates the cursor within an oversized wrapped logical line', async (a: TestApi) => {
-			const { source } = await createSourceEditor(a, 'wrapped '.repeat(1000));
-			source.scrollY.nextPage(0.5, { keepCursorVisible: true });
-			await a.sleep(100);
-			a.equal(source.cursorY.index, 0);
-			a.ok(source.cursor.index > 0);
-			a.equal(source.geometry.caret(source.cursor.index).status, 'visible');
-			source.cursor.go(7000, { reveal: 'middle' });
+		it.testElement('new movement and scrolling cancel pending reveals', async a => {
+			const { source } = await createSourceEditor(a, 'value\n'.repeat(300));
+			source.cursorY.go(150);
+			source.cursor.reveal('middle');
+			source.cursorY.go(0);
+			source.scrollY.goStart();
 			await a.sleep(150);
-			source.scrollY.previousPage(1, { keepCursorVisible: true });
-			await a.sleep(100);
-			a.equal(source.geometry.caret(source.cursor.index).status, 'visible', 'reverse scrolling relocates onto the last fully visible screen row');
+			a.equal(source.cursor.index, 0);
+			a.equal(source.scrollY.index, 0);
 		});
 
 		it.testElement('reveals a distant document offset inside one wrapped logical line', async (a: TestApi) => {
 			const value = 'wrapped '.repeat(1000);
 			const { source } = await createSourceEditor(a, value);
-			source.cursor.go(value.length - 80, { reveal: 'middle' });
+			source.cursor.go(value.length - 80);
+			source.cursor.reveal('middle');
 			await a.sleep(150);
 			a.equal(source.geometry.caret(source.cursor.index).status, 'visible');
 		});
@@ -3646,6 +3660,106 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 				a.equal(source.cursor.index, 3, 'editing resets preference');
 			});
 
+		for (const ready of [false, true]) for (const paint of [false, true])
+			it.testElement(`preserves logical goals with ready=${ready}, paint=${paint}`, async a => {
+				const source = a.element(Source);
+				source.style.cssText = 'display:block;width:320px;height:160px;font:12px monospace';
+				source.setText('longer\nx\n\nlongest');
+				if (ready) await a.sleep(75);
+				source.cursor.go(5);
+				source.cursorY.nextLogical();
+				a.equal(source.cursor.index, 8, 'Source keeps insertion endpoints');
+				source.cursor.goPreservingGoal(7);
+				if (paint) await a.sleep(40);
+				source.cursorY.previousLogical();
+				a.equal(source.cursor.index, 5, 'endpoint correction preserves the original goal');
+				source.cursorY.nextLogical(3);
+				a.equalValues(source.cursor.position(), { line: 3, ch: 5 });
+				source.cursorY.previousLogical(3);
+				a.equal(source.cursor.index, 5, 'empty-line roundtrip');
+				source.cursorY.nextLogical();
+				source.cursorX.previous();
+				source.cursorY.previousLogical();
+				a.equal(source.cursor.index, 0, 'ordinary horizontal movement resets the goal');
+			});
+
+		it.testElement('logical movement bypasses wraps without changing visual movement', async a => {
+			const { source } = await createSourceEditor(a, `${'word '.repeat(60)}\nnext`);
+			const start = 5;
+			source.cursor.go(start);
+			source.cursorY.next();
+			a.equal(source.cursorY.index, 0);
+			a.ok(source.cursorX.index > start);
+			source.cursor.go(start);
+			source.cursorY.nextLogical();
+			a.equalValues(source.cursor.position(), { line: 1, ch: 4 });
+			source.cursorY.previousLogical();
+			a.equal(source.cursor.index, start);
+			a.equal(source.scrollY.index, 0);
+		});
+
+		it.testElement('logical movement respects graphemes, tabs, counts and document bounds', async a => {
+			const { source } = await createSourceEditor(a, 'abcdef\n\t😀e\u0301z\nabcdef');
+			for (const [goal, expected] of [[2, 1], [4, 3], [5, 5]] as const) {
+				source.cursor.go(goal);
+				source.cursorY.nextLogical();
+				a.equal(source.cursorX.index, expected, 'never lands within a grapheme');
+				source.cursorY.nextLogical();
+				a.equal(source.cursorX.index, goal);
+				source.cursorY.previousLogical(2);
+				a.equal(source.cursor.index, goal);
+			}
+			for (const count of [0, -1, 0.5, NaN, Infinity]) {
+				source.cursorY.nextLogical(count);
+				source.cursorY.previousLogical(count);
+				a.equal(source.cursor.index, 5);
+			}
+			source.cursorY.previousLogical(100);
+			a.equal(source.cursor.index, 5);
+			source.cursorY.nextLogical(100);
+			a.equalValues(source.cursor.position(), { line: 2, ch: 5 });
+			source.cursor.goPreservingGoal(Infinity);
+			a.equal(source.cursor.index, source.getText().length);
+			source.cursor.goPreservingGoal(NaN);
+			a.equal(source.cursor.index, 0);
+			source.cursorY.nextLogical(2);
+			a.equal(source.cursorX.index, 5);
+			source.selection.set(2);
+			source.cursorY.nextLogical(2);
+			a.equal(source.cursorX.index, 2, 'selection resets the goal');
+			source.edit.replace('!');
+			source.cursorY.previousLogical(2);
+			a.equal(source.cursorX.index, 3, 'editing resets the goal');
+		});
+
+		it.testElement('a thin normal-mode binding owns endpoint policy without tracking a goal', async a => {
+			const { source, target } = await createSourceEditor(a, 'longer\nx\nlongest');
+			const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+			const key = (event: KeyboardEvent) => {
+				if (event.key !== 'j' && event.key !== 'k') return;
+				event.preventDefault();
+				event.stopImmediatePropagation();
+				if (event.key === 'j') source.cursorY.nextLogical();
+				else source.cursorY.previousLogical();
+				const range = source.cursorY.range();
+				if (range.end > range.start && source.cursor.index === range.end) {
+					const last = graphemes.segment(source.getText(range.start, range.end)).containing(range.end - range.start - 1);
+					if (last) source.cursor.goPreservingGoal(range.start + last.index);
+				}
+				source.cursor.reveal();
+			};
+			source.addEventListener('keydown', key, true);
+			try {
+				source.cursor.go(5);
+				await editorAction(a, target, 'press', 'j');
+				a.equal(source.cursor.index, 7);
+				await editorAction(a, target, 'press', 'k');
+				a.equal(source.cursor.index, 5);
+			} finally {
+				source.removeEventListener('keydown', key, true);
+			}
+		});
+
 		it.testElement('preserves vertical preference through repeated keyboard input', async a => {
 			const { source, target } = await createSourceEditor(a, '  one.two  three!\n  four five\n\nsix');
 			source.cursor.go(15);
@@ -3723,6 +3837,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			await a.sleep(100);
 			source.cursorY.go(149);
 			source.cursorX.go(2);
+			source.cursor.reveal();
 			await a.sleep(100);
 			a.equalValues(source.cursor.position(), { line: 149, ch: 2 });
 			a.equal(source.geometry.caret(source.cursor.index).status, 'visible', 'distant navigation reveals the caret');
@@ -3733,6 +3848,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			await a.sleep(100);
 			source.cursorY.go(29);
 			source.cursorX.go(3);
+			source.cursor.reveal();
 			await a.sleep(100);
 			a.equalValues(source.cursor.position(), { line: 29, ch: 3 });
 			a.equal(source.geometry.caret(source.cursor.index).status, 'visible', 'reverse navigation after resize reveals the caret');
@@ -3745,11 +3861,13 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			await a.sleep(100);
 			a.equal(source.getText(head - 2, head + 4), 'edited');
 			source.cursorY.go(179);
+			source.cursor.reveal();
 			await a.sleep(100);
 			a.equal(source.geometry.caret(source.cursor.index).status, 'visible', 'navigation after editing reveals the caret');
 			source.cursorY.go(19);
 			source.cursorY.go(199);
 			source.cursorY.go(79);
+			source.cursor.reveal();
 			await a.sleep(100);
 			a.equal(source.cursorY.index, 79);
 			a.equal(source.geometry.caret(source.cursor.index).status, 'visible', 'the latest navigation wins');
@@ -3759,6 +3877,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			parent.append(source);
 			await a.sleep(100);
 			source.cursorY.go(49);
+			source.cursor.reveal();
 			await a.sleep(100);
 			a.equal(source.geometry.caret(source.cursor.index).status, 'visible', 'navigation works after remount');
 		});
@@ -3781,6 +3900,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			for (const line of [149, 229, 0, 249, 149]) {
 				source.cursorY.go(line);
 				source.cursorX.go(2);
+				source.cursor.reveal();
 				await a.sleep(100);
 				a.equalValues(source.cursor.position(), { line, ch: 2 });
 				a.equal(source.geometry.caret(source.cursor.index).status, 'visible', `line ${line + 1} is revealed`);
@@ -3788,6 +3908,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 				a.equal(source.fold.range(10)?.closed, true);
 			}
 			source.cursorY.go(30);
+			source.cursor.reveal();
 			await a.sleep(100);
 			a.equal(source.fold.range(10)?.closed, false);
 			a.equal(source.geometry.caret(source.cursor.index).status, 'visible', 'navigation reveals hidden text');
@@ -3798,6 +3919,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			for (const line of [749, 50, 999, 0, 500, 150, 990, 100, 800, 10, 400, 700]) {
 				source.cursorY.go(line);
 				source.cursorX.go(2);
+				source.cursor.reveal();
 				await a.sleep(150);
 				a.equal(source.geometry.caret(source.cursor.index).status, 'visible', `wrapped line ${line + 1} is revealed`);
 			}
@@ -4451,6 +4573,21 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			source.fold.close(-1);
 			source.fold.open(99);
 			a.ok(source.fold.ranges.every(range => range.closed));
+		});
+
+		it.testElement('logical navigation preserves goals through collapsed projections', async a => {
+			const source = await createFoldEditor(a, 'longer {\n hidden\n}\nx\nlongest');
+			source.fold.close(0);
+			await a.sleep(40);
+			source.cursor.go(5);
+			source.cursorY.nextLogical();
+			a.equalValues(source.cursor.position(), { line: 3, ch: 1 });
+			source.cursor.goPreservingGoal(source.cursorY.range().start);
+			source.cursorY.nextLogical();
+			a.equalValues(source.cursor.position(), { line: 4, ch: 5 });
+			source.cursorY.previousLogical(2);
+			a.equal(source.cursor.index, 5);
+			a.equal(source.fold.range(0)?.closed, true);
 		});
 
 		it.testElement('preserves preferred position across a closed fold and short line', async a => {

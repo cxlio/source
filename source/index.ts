@@ -115,6 +115,8 @@ export interface SourceEditFeature {
 	replace(value: string, range?: SourceRange): SourceChange;
 }
 
+const Graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
 const TokenTypes = [
 	'keyword', 'operator', 'variable', 'comment', 'tag', 'type', 'attribute',
 	'selection', 'block', 'link', 'cmd', 'error', 'number', 'string', 'property',
@@ -139,32 +141,34 @@ export interface SourceTokenFeature {
 	wordRange(index?: number): SourceRange;
 }
 
-export interface SourceCursorOptions {
-	reveal?: false | 'nearest' | 'start' | 'middle' | 'end';
-	keepCursorVisible?: boolean;
-}
+export type SourceCursorAlignment = 'nearest' | 'start' | 'middle' | 'end';
 
 export interface SourceCursorNavigationFeature {
 	readonly index: number;
-	go(index: number, options?: SourceCursorOptions): void;
+	go(index: number): void;
 	range(from?: number, to?: number): SourceRange;
 	goStart(): void;
 	goEnd(): void;
-	next(count?: number, options?: SourceCursorOptions): void;
-	previous(count?: number, options?: SourceCursorOptions): void;
-	nextPage(count?: number, options?: SourceCursorOptions): void;
-	previousPage(count?: number, options?: SourceCursorOptions): void;
+	next(count?: number): void;
+	previous(count?: number): void;
+	nextPage(count?: number): void;
+	previousPage(count?: number): void;
 	getVisibleFirst(): number | undefined;
 	getVisibleMiddle(): number | undefined;
 	getVisibleLast(): number | undefined;
 }
 
 export interface SourceCursorFeature extends SourceCursorNavigationFeature {
+	goPreservingGoal(index: number): void;
+	reveal(alignment?: SourceCursorAlignment): void;
 	indexAt(position: SourcePosition): number;
 	position(index?: number): SourcePosition;
 }
 
-export type SourceCursorYFeature = SourceCursorNavigationFeature;
+export interface SourceCursorYFeature extends SourceCursorNavigationFeature {
+	nextLogical(count?: number): void;
+	previousLogical(count?: number): void;
+}
 
 export interface SourceHistoryFeature {
 	undo(): void;
@@ -299,7 +303,11 @@ export class Source extends Code {
 			get index() {
 				return source.selectionHead;
 			},
-			go: (index, options) => source.goTo(index, options),
+			go: index => source.goTo(index),
+			goPreservingGoal: index => source.goTo(index, true),
+			reveal: (alignment = 'nearest') => {
+				if (source.isConnected) source.revealSelection?.(alignment);
+			},
 			...source.visibleTargets(position => source.buffer.indexAt(position)),
 			indexAt: position => source.buffer.indexAt(position),
 			position: (index = source.selectionHead) =>
@@ -308,12 +316,12 @@ export class Source extends Code {
 				start: source.clampSelection(Math.min(from, to)),
 				end: source.clampSelection(Math.max(from, to)),
 			}),
-			goStart: () => source.selection.set(0),
-			goEnd: () => source.selection.set(Infinity),
-			next: (count = 1, options) => source.repeatNavigation(count, options, () => source.moveHorizontal(1)),
-			previous: (count = 1, options) => source.repeatNavigation(count, options, () => source.moveHorizontal(-1)),
-			nextPage: (count = 1, options) => source.repeatNavigation(count, options, () => source.moveHorizontal(1, 10)),
-			previousPage: (count = 1, options) => source.repeatNavigation(count, options, () => source.moveHorizontal(-1, 10)),
+			goStart: () => source.goTo(0),
+			goEnd: () => source.goTo(Infinity),
+			next: (count = 1) => source.repeatNavigation(count, () => source.moveHorizontal(1)),
+			previous: (count = 1) => source.repeatNavigation(count, () => source.moveHorizontal(-1)),
+			nextPage: (count = 1) => source.repeatNavigation(count, () => source.moveHorizontal(1, 10)),
+			previousPage: (count = 1) => source.repeatNavigation(count, () => source.moveHorizontal(-1, 10)),
 		};
 	})();
 	readonly cursorX: SourceCursorNavigationFeature = (() => {
@@ -322,7 +330,7 @@ export class Source extends Code {
 			get index() {
 				return source.buffer.positionAt(source.selectionHead).ch;
 			},
-			go: (index, options) => source.goColumn(index, options),
+			go: index => source.goColumn(index),
 			...source.visibleTargets(position => position.ch, true),
 			range: (from = source.cursorX.index, to = from) => {
 				const line = source.buffer.positionAt(source.selectionHead).line;
@@ -336,10 +344,10 @@ export class Source extends Code {
 			},
 			goStart: () => source.goColumn(0),
 			goEnd: () => source.goColumn(Infinity),
-			next: (count = 1, options) => source.repeatNavigation(count, options, () => source.moveHorizontal(1)),
-			previous: (count = 1, options) => source.repeatNavigation(count, options, () => source.moveHorizontal(-1)),
-			nextPage: (count = 1, options) => source.repeatNavigation(count, options, () => source.goColumn(source.cursorX.index + 10)),
-			previousPage: (count = 1, options) => source.repeatNavigation(count, options, () => source.goColumn(source.cursorX.index - 10)),
+			next: (count = 1) => source.repeatNavigation(count, () => source.moveHorizontal(1)),
+			previous: (count = 1) => source.repeatNavigation(count, () => source.moveHorizontal(-1)),
+			nextPage: (count = 1) => source.repeatNavigation(count, () => source.goColumn(source.cursorX.index + 10)),
+			previousPage: (count = 1) => source.repeatNavigation(count, () => source.goColumn(source.cursorX.index - 10)),
 		};
 	})();
 	readonly cursorY: SourceCursorYFeature = (() => {
@@ -348,16 +356,18 @@ export class Source extends Code {
 			get index() {
 				return source.buffer.positionAt(source.selectionHead).line;
 			},
-			go: (index, options) => source.goLine(index, options),
+			go: index => source.goLine(index),
 			...source.visibleTargets(position => position.line),
 			range: (from = source.cursorY.index, to = from) =>
 				source.buffer.lineRange(from, to),
 			goStart: () => source.goLine(0),
 			goEnd: () => source.goLine(Infinity),
-			next: (count = 1, options) => source.repeatNavigation(count, options, () => source.moveVertical(1)),
-			previous: (count = 1, options) => source.repeatNavigation(count, options, () => source.moveVertical(-1)),
-			nextPage: (count = 1, options) => source.repeatNavigation(count, options, () => source.movePage(1)),
-			previousPage: (count = 1, options) => source.repeatNavigation(count, options, () => source.movePage(-1)),
+			next: (count = 1) => source.repeatNavigation(count, () => source.moveVertical(1)),
+			previous: (count = 1) => source.repeatNavigation(count, () => source.moveVertical(-1)),
+			nextLogical: (count = 1) => source.repeatNavigation(count, () => source.moveLogical(1)),
+			previousLogical: (count = 1) => source.repeatNavigation(count, () => source.moveLogical(-1)),
+			nextPage: (count = 1) => source.repeatNavigation(count, () => source.movePage(1)),
+			previousPage: (count = 1) => source.repeatNavigation(count, () => source.movePage(-1)),
 		};
 	})();
 	readonly cursorToken: SourceCursorNavigationFeature = (() => {
@@ -366,16 +376,16 @@ export class Source extends Code {
 			get index() {
 				return source.tokenIndex();
 			},
-			go: (index, options) => source.goToken(index, undefined, options),
+			go: index => source.goToken(index),
 			...source.visibleTargets(position => source.tokenIndex(source.buffer.indexAt(position))),
 			range: (from = source.tokenIndex(), to = from) =>
 				source.tokenRange(from, to),
 			goStart: () => source.goToken(0),
 			goEnd: () => source.goToken(Infinity),
-			next: (count = 1, options) => source.repeatNavigation(count, options, () => source.goToken(source.tokenIndex() + 1, 1)),
-			previous: (count = 1, options) => source.repeatNavigation(count, options, () => source.goToken(source.tokenIndex() - 1, -1)),
-			nextPage: (count = 1, options) => source.repeatNavigation(count, options, () => source.goToken(source.tokenIndex() + 10, 1)),
-			previousPage: (count = 1, options) => source.repeatNavigation(count, options, () => source.goToken(source.tokenIndex() - 10, -1)),
+			next: (count = 1) => source.repeatNavigation(count, () => source.goToken(source.tokenIndex() + 1, 1)),
+			previous: (count = 1) => source.repeatNavigation(count, () => source.goToken(source.tokenIndex() - 1, -1)),
+			nextPage: (count = 1) => source.repeatNavigation(count, () => source.goToken(source.tokenIndex() + 10, 1)),
+			previousPage: (count = 1) => source.repeatNavigation(count, () => source.goToken(source.tokenIndex() - 10, -1)),
 		};
 	})();
 	readonly scrollX: SourceCursorNavigationFeature = this.scrollCursor('x');
@@ -581,9 +591,7 @@ export class Source extends Code {
 	protected readonly geometryFeature = sourceGeometry(this.buffer, this.text, this.host, this.folding);
 	protected preferredX?: number;
 	protected preferredIndex?: number;
-	protected cursorReveal: SourceCursorOptions['reveal'];
-	protected cursorRevealAxis: 'x' | 'y' = 'y';
-	protected keepScrolledCursorVisible = false;
+	protected revealSelection?: (alignment: SourceCursorAlignment) => void;
 	protected revealPending = false;
 	protected readonly decorationRenderer = sourceDecorations(
 		this.host,
@@ -814,19 +822,18 @@ canvas {
 						if (activeCaret) input.setBounds(cursor.bounds);
 					}
 
-					let revealAlignment: SourceCursorOptions['reveal'] = 'nearest';
-					let revealHorizontal = false;
+					let revealAlignment: SourceCursorAlignment = 'nearest';
 					function scrollToHead() {
 						const position = buffer.positionAt($.selectionHead);
 						const caret = text.getCaret(position);
 						if (caret) {
 							const top = caret.y + $.offsetY;
-							const delta = (position: number, size: number, extent: number, align: SourceCursorOptions['reveal']) =>
+							const delta = (position: number, size: number, extent: number, align: SourceCursorAlignment) =>
 								align === 'start' ? position : align === 'middle' ? position - (extent - size) / 2
 									: align === 'end' ? position + size - extent : position < 0 ? position : Math.max(0, position + size - extent);
-							const y = delta(top, caret.height, $.clientHeight, revealHorizontal ? 'nearest' : revealAlignment);
+							const y = delta(top, caret.height, $.clientHeight, revealAlignment);
 							const gutter = text.measureElement.offsetLeft;
-							const x = delta(caret.x - $.scrollLeft - gutter, caret.width, $.clientWidth - gutter, revealHorizontal ? revealAlignment : 'nearest');
+							const x = delta(caret.x - $.scrollLeft - gutter, caret.width, $.clientWidth - gutter, 'nearest');
 							if (Math.abs(y) > 0.5) $.scrollTop += y;
 							if (Math.abs(x) > 0.5) $.scrollLeft += x;
 						} else {
@@ -982,6 +989,7 @@ canvas {
 								blockAnchor,
 							);
 						else if (next !== undefined) setSelection(next, extend);
+						$.cursor.reveal();
 					}
 
 					function pointerPosition(event: PointerEvent) {
@@ -1011,33 +1019,18 @@ canvas {
 						$.setSelectionsState($.selectionSnapshot(), false);
 					}
 
+					$.revealSelection = alignment => {
+						revealAlignment = alignment;
+						$.revealPending = scrollToHead();
+					};
 					$.selectionSync = scroll => {
-						$.keepScrolledCursorVisible = false;
+						$.revealPending = false;
 						syncInput();
-						revealAlignment = $.cursorReveal ?? 'nearest';
-						revealHorizontal = $.cursorRevealAxis === 'x';
-						$.revealPending = scroll && revealAlignment !== false ? scrollToHead() : false;
+						if (scroll) $.cursor.reveal();
 						renderSelection();
 					};
 					$.rendered = () => {
 						if ($.revealPending) $.revealPending = scrollToHead();
-						if ($.keepScrolledCursorVisible && text.measured) {
-							$.keepScrolledCursorVisible = false;
-							const position = buffer.positionAt($.selectionHead);
-							const caret = text.getVisibleCaret(position);
-							const first = text.getVisiblePosition(0);
-							const top = caret ? caret.y + text.offsetY : first && $.selectionHead < buffer.indexAt(first) ? -1 : $.clientHeight;
-							if (!caret || top < 0 || top + caret.height > $.clientHeight) {
-								const target = text.getVisiblePosition(top < 0 ? 0 : 1);
-								if (target) {
-									const rect = text.getVisibleCaret(target) ?? text.getCaret(target);
-									const hit = rect && $.hitTest.getCaretAtPosition($.preferredX ?? caret?.x ?? text.measureElement.offsetLeft,
-										rect.y + text.offsetY + rect.height / 2);
-									const next = buffer.indexAt(hit?.position ?? target);
-									$.setActiveSelectionState($.selectionExtending ? $.selectionAnchor : next, next, false, true);
-								}
-							}
-						}
 						renderSelection();
 					};
 					$.reset = resetEditor;
@@ -1200,9 +1193,8 @@ canvas {
 		const extent = () => axis === 'x' ? source.clientWidth : source.clientHeight;
 		const maximum = () => Math.max(0, (axis === 'x' ? source.scrollWidth : source.scrollHeight) - extent());
 		const clamp = (value: number) => Number.isNaN(value) ? source[scroll] : Math.max(0, Math.min(value, maximum()));
-		const go = (value: number, options?: SourceCursorOptions) => {
+		const go = (value: number) => {
 			source.revealPending = false;
-			source.keepScrolledCursorVisible = options?.keepCursorVisible ?? false;
 			source[scroll] = clamp(value);
 		};
 		const visible = (fraction: number) => source.isConnected && extent() > 0
@@ -1213,44 +1205,33 @@ canvas {
 			range: (from = source[scroll], to = from) => ({ start: Math.min(clamp(from), clamp(to)), end: Math.max(clamp(from), clamp(to)) }),
 			goStart: () => go(0),
 			goEnd: () => go(Infinity),
-			next: (count = 1, options) => go(source[scroll] + count, options),
-			previous: (count = 1, options) => go(source[scroll] - count, options),
-			nextPage: (count = 1, options) => go(source[scroll] + extent() * count, options),
-			previousPage: (count = 1, options) => go(source[scroll] - extent() * count, options),
+			next: (count = 1) => go(source[scroll] + count),
+			previous: (count = 1) => go(source[scroll] - count),
+			nextPage: (count = 1) => go(source[scroll] + extent() * count),
+			previousPage: (count = 1) => go(source[scroll] - extent() * count),
 			getVisibleFirst: () => visible(0),
 			getVisibleMiddle: () => visible(0.5),
 			getVisibleLast: () => visible(1),
 		};
 	}
 
-	protected goTo(index: number, options?: SourceCursorOptions, axis: 'x' | 'y' = 'y') {
-		const previous = this.cursorReveal;
-		const previousAxis = this.cursorRevealAxis;
-		this.cursorReveal = options?.reveal ?? previous;
-		this.cursorRevealAxis = axis;
-		try {
-			this.selection.set(index);
-		} finally {
-			this.cursorReveal = previous;
-			this.cursorRevealAxis = previousAxis;
-		}
+	protected goTo(index: number, preserveGoal = false) {
+		if (preserveGoal) this.preferredIndex ??= this.selectionHead;
+		this.blockAnchor = undefined;
+		if (this.selectionExtending)
+			this.setActiveSelectionState(this.selectionAnchor, index, false, preserveGoal);
+		else this.setSelectionState(index, index, false, preserveGoal);
 	}
 
-	protected repeatNavigation(count: number, options: SourceCursorOptions | undefined, step: () => void) {
+	protected repeatNavigation(count: number, step: () => void) {
 		if (!Number.isSafeInteger(count) || count < 0) return;
-		const previous = this.cursorReveal;
-		this.cursorReveal = options?.reveal;
-		try {
-			for (let i = 0; i < Math.min(count, this.buffer.length + 1); i++) step();
-		} finally {
-			this.cursorReveal = previous;
-		}
+		for (let i = 0; i < Math.min(count, this.buffer.length + 1); i++) step();
 	}
 
-	protected goColumn(ch: number, options?: SourceCursorOptions) {
+	protected goColumn(ch: number) {
 		const { line } = this.buffer.positionAt(this.selectionHead);
 		const row = this.folding.lineAt(this.folding.rowAt(line));
-		this.goTo(this.folding.indexAt(row, ch), options, 'x');
+		this.goTo(this.folding.indexAt(row, ch));
 	}
 
 	protected moveHorizontal(direction: -1 | 1, count = 1) {
@@ -1263,11 +1244,11 @@ canvas {
 			if (hidden) next = direction === 1 ? hidden.to : hidden.from;
 			index = this.clampSelection(next);
 		}
-		this.selection.set(index);
+		this.goTo(index);
 	}
 
-	protected goLine(line: number, options?: SourceCursorOptions) {
-		this.goTo(this.buffer.indexAt({ line, ch: 0 }), options);
+	protected goLine(line: number) {
+		this.goTo(this.buffer.indexAt({ line, ch: 0 }));
 	}
 
 	protected moveVertical(direction: -1 | 1) {
@@ -1286,7 +1267,17 @@ canvas {
 		}
 		if (next === undefined || next === this.selectionHead)
 			next = this.folding.indexAt(this.folding.lineAt(this.folding.rowAt(position.line) + direction), this.folding.columnAt(origin));
-		this.setSelectionState(next, next, true, true);
+		this.goTo(next, true);
+	}
+
+	protected moveLogical(direction: -1 | 1) {
+		const origin = this.preferredIndex ??= this.selectionHead;
+		const { line } = this.buffer.positionAt(this.selectionHead);
+		const target = this.folding.lineAt(this.folding.rowAt(line) + direction);
+		const next = this.folding.indexAt(target, this.folding.columnAt(origin));
+		const position = this.buffer.positionAt(next);
+		const segment = Graphemes.segment(this.buffer.getLine(position.line)).containing(position.ch);
+		this.goTo(segment ? next - position.ch + segment.index : next, true);
 	}
 
 	protected movePage(direction: -1 | 1) {
@@ -1294,7 +1285,7 @@ canvas {
 		const lineHeight = this.text.measureElement.offsetHeight || 16;
 		const lines = Math.max(1, Math.floor(this.clientHeight / lineHeight));
 		const next = this.folding.indexAt(this.folding.lineAt(this.folding.rowAt(position.line) + direction * lines), this.folding.columnAt(this.selectionHead));
-		this.setSelectionState(next, next, true, true);
+		this.goTo(next, true);
 	}
 
 	protected tokenAt(index: number): SourceTokenInfo<string> {
@@ -1347,7 +1338,7 @@ canvas {
 		};
 	}
 
-	protected goToken(index: number, direction?: -1 | 1, options?: SourceCursorOptions) {
+	protected goToken(index: number, direction?: -1 | 1) {
 		const tokens = this.highlight.getNavigationTokens();
 		if (!tokens.length) return;
 		index = this.normalizeOrdinal(index, tokens.length);
@@ -1359,11 +1350,11 @@ canvas {
 			}
 			if (index < 0 || index >= tokens.length) {
 				const boundary = index < 0 ? 0 : this.buffer.length;
-				if (!this.folding.hiddenAt(boundary)) this.selection.set(boundary);
+				if (!this.folding.hiddenAt(boundary)) this.goTo(boundary);
 				return;
 			}
 		}
-		this.goTo(tokens[index]?.start ?? this.buffer.length, options);
+		this.goTo(tokens[index]?.start ?? this.buffer.length);
 	}
 
 	protected normalizeOrdinal(index: number, maximum: number) {
