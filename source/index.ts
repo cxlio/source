@@ -581,7 +581,7 @@ export class Source extends Code {
 	protected readonly geometryFeature = sourceGeometry(this.buffer, this.text, this.host, this.folding);
 	protected preferredX?: number;
 	protected preferredIndex?: number;
-	protected cursorReveal?: SourceCursorOptions['reveal'];
+	protected cursorReveal: SourceCursorOptions['reveal'];
 	protected cursorRevealAxis: 'x' | 'y' = 'y';
 	protected keepScrolledCursorVisible = false;
 	protected revealPending = false;
