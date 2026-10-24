@@ -5,12 +5,13 @@
 	"coaxial": {
 		"worktree": {
 			"setup": "ln -s ../../node_modules node_modules"
-		},
-		"tasks": {
-			"steps": {
-				"publish": {}
-			}
 		}
+	},
+	"ai": {
+		"instructions": [
+			"To Build: npm run build package --prefix source",
+			"To run tests: npm test --prefix source"
+		]
 	},
 	"watch": {
 		"rules": {
