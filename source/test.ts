@@ -4716,6 +4716,38 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 	});
 
 	a.test('gutters', it => {
+		it.testElement('aligns every text paint with the current gutters', async (a: TestApi) => {
+			const source = a.element(Source);
+			source.style.cssText = 'display:block;width:320px;height:160px;font:12px monospace';
+			source.setText('{\nhello\n}');
+			const canvas = source.shadowRoot?.querySelector('canvas[part="text"]');
+			a.assert(canvas instanceof HTMLCanvasElement);
+			const context = canvas.getContext('2d');
+			a.assert(context);
+			const paints: { x: number; width: number }[] = [];
+			const fillText = context.fillText;
+			context.fillText = function (text, x, y, maxWidth) {
+				const width = source.shadowRoot?.querySelector('[part="gutters"]')?.getBoundingClientRect().width ?? 0;
+				paints.push({ x, width });
+				fillText.call(this, text, x, y, maxWidth);
+			};
+			try {
+				source.gutters = [lineNumbers(), foldGutter(source.fold)];
+				await a.sleep(75);
+				a.ok(paints.some(paint => paint.width > 0), 'paints with gutters');
+				source.highlighter = foldHighlighter;
+				source.style.fontSize = '18px';
+				await a.sleep(40);
+				a.ok(source.shadowRoot?.querySelector('[part~="fold-toggle"]'), 'renders parsed fold controls');
+				source.gutters = [lineNumbers()];
+				await a.sleep(40);
+				source.gutters = [];
+				await a.sleep(40);
+				a.ok(paints.some(paint => paint.width === 0), 'paints without gutters');
+				a.ok(paints.every(paint => Math.abs(paint.x - Math.round(paint.width)) < 1), 'text never paints at a stale gutter offset');
+			} finally { context.fillText = fillText; }
+		});
+
 		it.testElement('renders line numbers and named gutter markers', async a => {
 			const { source } = await createSourceEditor(a, 'one\ntwo\nthree');
 			const markers = gutterMarkers();

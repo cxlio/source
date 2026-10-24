@@ -1931,7 +1931,21 @@ canvas {
 		const renderedHeights = new Map<number, number>();
 		const render = (index: number, order: number) => {
 			const line = this.folding.lineAt(index);
-			if (order === 0) text.begin(line);
+			if (order === 0) {
+				for (const gutter of this.gutters)
+					gutter.render({
+						lines: text.toRender,
+						lineCount: this.buffer.getLineCount(),
+						offset: this.offsetY,
+					});
+				const width = `${this.gutterHost.offsetWidth}px`;
+				if (host.style.getPropertyValue('--source-gutter-width') !== width) {
+					host.style.setProperty('--source-gutter-width', width);
+					this.rowHeights.clear();
+					text.resize();
+				}
+				text.begin(line);
+			}
 			const spans = this.folding.spans(line);
 			const rect = spans ? this.renderFoldedLine(line, spans) : text.renderLine(line, this.buffer.getLine(line), this.highlight.getLine(line));
 			renderedHeights.set(index, rect.offsetHeight);
@@ -1955,11 +1969,7 @@ canvas {
 			onResize(host).raf(() => {
 				if (host.clientHeight > 0 && host.clientWidth > 0) text.resize();
 			}),
-			onResize(this.gutterHost).raf(() => {
-				const width = this.gutterHost.offsetWidth;
-				host.style.setProperty('--source-gutter-width', `${width}px`);
-				this.resetRenderer();
-			}),
+			onResize(this.gutterHost).raf(() => this.resetRenderer()),
 			virtualScroll({
 				host,
 				scrollElement: this,
