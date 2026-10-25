@@ -2535,6 +2535,70 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			subscription.unsubscribe();
 		});
 
+		it.testElement('round trips directional selection snapshots', async a => {
+			const { source } = await createSourceEditor(a, 'alpha beta gamma');
+			const selections = [{ anchor: 0, head: 5 }, { anchor: 15, head: 11 }] as const;
+			let changes = 0;
+			const subscription = source.selection.onChange.subscribe(() => changes++);
+
+			source.selection.setSelections(selections);
+			a.equalValues(source.selection.selections(), [...selections]);
+			a.equalValues(source.selection.ranges(), [{ start: 0, end: 5 }, { start: 11, end: 15 }]);
+			a.equal(source.cursor.index, 11);
+			a.equal(changes, 1);
+			const snapshot = source.selection.selections();
+			source.selection.setSelections(snapshot);
+			a.equal(changes, 1);
+			source.selection.set(2);
+			source.selection.setSelections(snapshot);
+			a.equalValues(source.selection.selections(), [...selections]);
+			a.equal(source.cursor.index, 11);
+			a.equal(changes, 3);
+			source.selection.begin();
+			source.cursor.go(10);
+			source.selection.end();
+			a.equalValues(source.selection.selections(), [{ anchor: 0, head: 5 }, { anchor: 15, head: 10 }]);
+			subscription.unsubscribe();
+		});
+
+		it.testElement('isolates selection snapshot ownership', async a => {
+			const { source } = await createSourceEditor(a, 'alpha');
+			const selection = { anchor: 4, head: 1 };
+			const input = [selection];
+			source.selection.setSelections(input);
+			selection.anchor = 0;
+			input.push({ anchor: 2, head: 3 });
+			a.equalValues(source.selection.selections(), [{ anchor: 4, head: 1 }]);
+			const snapshot = source.selection.selections();
+			a.ok(snapshot[0] !== source.selection.selections()[0]);
+			snapshot.pop();
+			a.equalValues(source.selection.selections(), [{ anchor: 4, head: 1 }]);
+			source.selection.set(0);
+			a.equalValues(input, [{ anchor: 0, head: 1 }, { anchor: 2, head: 3 }]);
+		});
+
+		it.testElement('normalizes bulk selection endpoints and empty input', async a => {
+			const { source } = await createSourceEditor(a, 'alpha');
+			source.selection.setSelections([{ anchor: Infinity, head: -1 }, { anchor: NaN, head: 2 }]);
+			a.equalValues(source.selection.selections(), [{ anchor: 5, head: 0 }, { anchor: 0, head: 2 }]);
+			source.selection.setSelections([]);
+			a.equalValues(source.selection.selections(), [{ anchor: 0, head: 0 }]);
+			a.equal(source.cursor.index, 0);
+			a.ok(!source.selection.somethingSelected());
+		});
+
+		it.testElement('resets block anchors when replacing selections during extension', async a => {
+			const { source, target } = await createSourceEditor(a, 'abcd\nefgh\nijkl');
+			source.selection.block(1, 8);
+			source.selection.begin();
+			source.selection.setSelections([{ anchor: 7, head: 8 }]);
+			source.selection.end();
+			target.dispatchEvent(new KeyboardEvent('keydown', {
+				key: 'ArrowDown', altKey: true, shiftKey: true, cancelable: true,
+			}));
+			a.equalValues(source.selection.selections(), [{ anchor: 7, head: 8 }, { anchor: 12, head: 13 }]);
+		});
+
 		it.testElement('creates rectangular block selections', async a => {
 			const { source } = await createSourceEditor(a, 'abcd\nx\n\nwxyz');
 			const end = source.cursor.indexAt({ line: 3, ch: 3 });

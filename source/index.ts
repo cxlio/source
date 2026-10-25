@@ -86,6 +86,8 @@ export interface SourceSelectionFeature {
 	readonly onChange: Observable<void>;
 	range(): SourceRange;
 	ranges(): SourceRange[];
+	selections(): SourceSelection[];
+	setSelections(selections: readonly SourceSelection[]): void;
 	set(anchor: number, head?: number): void;
 	block(anchor: number, head?: number): void;
 	add(...ranges: SourceRange[]): void;
@@ -398,6 +400,11 @@ export class Source extends Code {
 			},
 			range: () => selectionRange(this.activeSelection),
 			ranges: () => this.selectionState.map(selectionRange),
+			selections: () => this.selectionSnapshot(),
+			setSelections: selections => {
+				this.blockAnchor = undefined;
+				this.setSelectionsState(selections, true);
+			},
 			set: (anchor, head = anchor) => {
 				this.blockAnchor = undefined;
 				if (this.selectionExtending)
