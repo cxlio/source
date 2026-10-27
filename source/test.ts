@@ -3874,6 +3874,32 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			a.equal(await editorValue(a, target), 'aXlpha', 'caret position preserved');
 		});
 
+		it.testElement('aligns empty-line carets with the text origin', async (a: TestApi) => {
+			const { source, target } = await createSourceEditor(a, '');
+			source.style.padding = '8px 16px';
+			source.gutters = [lineNumbers()];
+			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="cursor"]');
+			a.assert(canvas);
+			for (const value of ['', 'alpha\n']) {
+				source.setText(value);
+				await a.sleep(50);
+				for (const fat of [false, true]) {
+					source.fatCursor = fat;
+					await editorAction(a, target, 'press', 'End');
+					source.cursor.go(value.length);
+					await a.sleep(20);
+					const caret = source.geometry.caret(value.length);
+					a.assert(caret.status === 'visible');
+					const pixels = canvas.getContext('2d')?.getImageData(0, 0, canvas.width, canvas.height).data;
+					a.assert(pixels);
+					let left = canvas.width;
+					for (let i = 3; i < pixels.length; i += 4)
+						if (pixels[i]) left = Math.min(left, ((i - 3) / 4) % canvas.width);
+					a.equal(left, Math.trunc(caret.bounds.x - canvas.getBoundingClientRect().x) * (window.devicePixelRatio || 1));
+				}
+			}
+		});
+
 		it.testElement('uses caret-color with a text color fallback', async (a: TestApi) => {
 			const { source, target } = await createSourceEditor(a, 'alpha');
 			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="cursor"]');

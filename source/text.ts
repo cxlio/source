@@ -516,7 +516,7 @@ export function textCanvas(host: HTMLElement) {
 					line: position.line,
 				};
 			}
-			return { ...caretRect(sourceLine, ch, part), line: position.line };
+			return { ...caretRect(sourceLine, ch, part, measureElement.offsetLeft), line: position.line };
 		}
 	}
 
