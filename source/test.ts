@@ -2744,6 +2744,43 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			a.equal(source.cursor.index, 6);
 		});
 
+		it.testElement('maps display columns independently of attachment and layout', async a => {
+			for (const source of [new Source(), a.element('c-source') as Source]) {
+				source.setText('\t界e\u0301😀👩‍💻Ａ\t!\r\n');
+				const boundaries = [[0, 0], [1, 4], [2, 6], [4, 7], [6, 9], [11, 11], [12, 13], [13, 16], [14, 17]];
+				for (const [offset = 0, column = 0] of boundaries) {
+					source.cursor.go(offset);
+					a.equal(source.cursorX.index, column);
+					a.equal(source.cursorX.indexAt(offset), column);
+					a.equalValues(source.cursorX.position(), { start: offset, end: offset });
+					source.cursorX.go(column);
+					a.equal(source.cursor.index, offset);
+				}
+				for (const [column, offset] of [[2, 0], [5, 1], [8, 4], [10, 6], [NaN, 0], [-Infinity, 0], [Infinity, 14], [6.9, 2]] as const) {
+					a.equalValues(source.cursorX.position(column), { start: offset, end: offset });
+				}
+				a.equal(source.cursorX.indexAt(3), 6);
+				a.equal(source.cursorX.indexAt(5), 7);
+				a.equalValues(source.cursorX.range(16, 4), { start: 1, end: 13 });
+				source.cursorX.goStart();
+				source.cursorX.nextPage();
+				a.equal(source.cursor.index, 6);
+				source.cursorX.previousPage();
+				a.equal(source.cursor.index, 0);
+				source.cursorX.next(4);
+				a.equal(source.cursor.index, 6);
+				source.cursorX.previous(2);
+				a.equal(source.cursor.index, 2);
+				source.tabSize = 8;
+				a.equal(source.cursorX.index, 10);
+				source.edit.replace('a');
+				a.equal(source.cursorX.index, 11);
+				source.cursorY.goEnd();
+				a.equal(source.cursorX.index, 0);
+				a.equalValues(source.cursorX.range(0, Infinity), { start: 17, end: 17 });
+			}
+		});
+
 		it.testElement('maps every text cursor between its index and document ranges', async a => {
 			const { source } = await createSourceEditor(a, 'alpha 12\nbeta');
 			source.mode = 'javascript';
@@ -2771,6 +2808,34 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			a.equal(source.cursor.index, 9);
 			source.cursorToken.previousLogical(2);
 			a.equal(source.cursor.index, 0);
+		});
+
+		it.testElement('reports viewport targets in display columns', async a => {
+			const { source } = await createSourceEditor(a, '\t界e\u0301😀');
+			a.equal(source.cursorX.getVisibleFirst(), 0);
+			a.equal(source.cursorX.getVisibleMiddle(), 9);
+			a.equal(source.cursorX.getVisibleLast(), 9);
+		});
+
+		it.testElement('counts Unicode display cells without splitting graphemes', async a => {
+			const source = a.element(Source);
+			for (const [value, width] of [['a\u3099', 1], ['\u0301', 0], ['\u200b', 0], ['\u200d', 0], ['\u{1d11e}', 1], ['한', 2], ['ｱ', 1], ['🇺🇸', 2], ['1️⃣', 2], ['☺️', 2], ['👨‍👩‍👧‍👦', 2]] as const) {
+				source.setText(`${value}x`);
+				source.cursor.go(value.length);
+				a.equal(source.cursorX.index, width, value);
+				source.cursorX.goStart();
+				a.equal(source.cursor.index, 0);
+				source.cursorX.next();
+				a.equal(source.cursor.index, value.length);
+				source.cursorX.previous();
+				a.equal(source.cursor.index, 0);
+			}
+			for (const size of [0, -1, NaN, Infinity, 1.5, 257]) {
+				source.tabSize = size;
+				source.setText('\t!');
+				source.cursor.go(1);
+				a.equal(source.cursorX.index, 4);
+			}
 		});
 
 		it.testElement('shares counted logical horizontal navigation across newlines', async a => {
@@ -3861,7 +3926,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			for (const [goal, expected] of [[2, 1], [4, 3], [5, 5]] as const) {
 				source.selection.set(goal);
 				source.cursorY.nextLogical();
-				a.equal(source.cursorX.index, expected, 'never lands within a grapheme');
+				a.equal(source.cursor.index - source.cursorY.range().start, expected, 'never lands within a grapheme');
 				source.cursorY.nextLogical();
 				a.equal(source.cursorX.index, goal);
 				source.cursorY.previousLogical(2);
@@ -3936,9 +4001,10 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 				const { source } = await createSourceEditor(a, `${value}\nx\n\n${value}`);
 				const start = value.length;
 				source.cursor.go(start);
+				const column = source.cursorX.index;
 				const before = source.geometry.caret(start);
 				for (let i = 0; i < 3; i++) source.cursorY.next();
-				a.equal(source.cursorX.index, start);
+				a.equal(source.cursorX.index, column);
 				for (let i = 0; i < 3; i++) source.cursorY.previous();
 				a.equal(source.cursor.index, start);
 				a.equalValues(source.geometry.caret(start), before, 'caret geometry is unchanged');
@@ -4317,6 +4383,32 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 	});
 
 	a.test('folding', it => {
+		it.testElement('maps display columns across folded spans and tab stops', async a => {
+			const source = await createFoldEditor(a, '\t界{\nhidden\n}\t😀');
+			source.fold.closeAll();
+			await a.sleep(20);
+			const end = source.getText().length;
+			const close = source.getText().indexOf('}');
+			a.equal(source.cursorX.indexAt(close), 8);
+			a.equal(source.cursorX.indexAt(close + 1), 9);
+			a.equal(source.cursorX.indexAt(close + 2), 12);
+			a.equal(source.cursorX.indexAt(end), 14);
+			source.cursorX.go(12);
+			a.equal(source.cursor.index, close + 2);
+			a.equalValues(source.cursorX.range(7, 12), { start: 3, end: close + 2 });
+			source.cursorX.previous();
+			a.equal(source.cursor.index, close + 1);
+			source.cursorX.previous(2);
+			a.equal(source.cursor.index, 3);
+			source.cursorX.next();
+			a.equal(source.cursor.index, close);
+			a.ok(source.fold.range(0)?.closed);
+			source.fold.openAll();
+			a.equal(source.cursorX.indexAt(close + 2), 4);
+			source.fold.closeAll();
+			a.equal(source.cursorX.indexAt(close + 2), 12);
+		});
+
 		it.testElement('roundtrips column mappings through a collapsed projection', async a => {
 			const source = await createFoldEditor(a, 'ab{\nhidden\n}cd\ntail');
 			source.fold.closeAll();

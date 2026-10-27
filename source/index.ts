@@ -34,6 +34,7 @@ import { createTextInput, type TextInputUpdate } from './input.js';
 import { Code } from './code.js';
 import { type SourceGutter } from './gutter.js';
 import { SourceFolding, type SourceFoldFeature, type SourceFoldSpan } from './fold.js';
+import { columnWidth } from './column.js';
 import type { SourceToken, SourceTokenSpan } from './highlight.js';
 export { type SourceFoldFeature, type SourceFoldRange } from './fold.js';
 import {
@@ -317,16 +318,14 @@ export class Source extends Code {
 		const source = this;
 		return source.cursorFeature({
 			get index() {
-				return source.folding.columnAt(source.selectionHead);
+				return source.displayColumn(source.selectionHead);
 			},
 			go: index => source.goColumn(index),
-			indexAt: index => source.folding.columnAt(source.clampSelection(index)),
-			...source.visibleTargets(position => source.folding.columnAt(source.buffer.indexAt(position)), true),
+			indexAt: index => source.displayColumn(source.clampSelection(index)),
+			...source.visibleTargets(position => source.displayColumn(source.buffer.indexAt(position)), true),
 			range: (from = source.cursorX.index, to = from) => {
-				const line = source.buffer.positionAt(source.selectionHead).line;
-				const row = source.folding.lineAt(source.folding.rowAt(line));
-				const start = source.folding.indexAt(row, source.normalizeOrdinal(from, Infinity));
-				const end = from === to ? start : source.folding.indexAt(row, source.normalizeOrdinal(to, Infinity));
+				const start = source.displayIndex(from);
+				const end = from === to ? start : source.displayIndex(to);
 				return {
 					start: Math.min(start, end),
 					end: Math.max(start, end),
@@ -334,8 +333,8 @@ export class Source extends Code {
 			},
 			goStart: () => source.goColumn(0),
 			goEnd: () => source.goColumn(Infinity),
-			next: (count = 1) => source.repeatNavigation(count, () => source.moveHorizontal(1)),
-			previous: (count = 1) => source.repeatNavigation(count, () => source.moveHorizontal(-1)),
+			next: (count = 1) => source.repeatNavigation(count, () => source.moveColumn(1)),
+			previous: (count = 1) => source.repeatNavigation(count, () => source.moveColumn(-1)),
 			nextPage: (count = 1) => source.repeatNavigation(count, () => source.goColumn(source.cursorX.index + 10)),
 			previousPage: (count = 1) => source.repeatNavigation(count, () => source.goColumn(source.cursorX.index - 10)),
 		});
@@ -1254,6 +1253,56 @@ canvas {
 
 	protected goColumn(ch: number) {
 		this.goTo(this.cursorX.position(ch).start);
+	}
+
+	protected *displayPositions(index: number) {
+		const { line } = this.buffer.positionAt(index);
+		const row = this.folding.lineAt(this.folding.rowAt(line));
+		const start = this.buffer.indexAt({ line: row, ch: 0 });
+		const spans: readonly SourceFoldSpan[] = this.folding.spans(row) ?? [{ start, end: start + this.buffer.getLine(row).length }];
+		const size = Number.isInteger(this.tabSize) && this.tabSize > 0 && this.tabSize <= 256 ? this.tabSize : 4;
+		let column = 0;
+		yield { index: start, column };
+		for (const span of spans) {
+			if (span.folded) {
+				yield { index: span.end, column: ++column };
+				continue;
+			}
+			for (const { segment, index: offset } of Graphemes.segment(this.buffer.getText(span.start, span.end))) {
+				column += segment === '\t' ? size - column % size : columnWidth(segment);
+				yield { index: span.start + offset + segment.length, column };
+			}
+		}
+	}
+
+	protected displayColumn(index: number) {
+		let column = 0;
+		for (const position of this.displayPositions(index)) {
+			if (position.index > index) break;
+			column = position.column;
+		}
+		return column;
+	}
+
+	protected displayIndex(column: number) {
+		column = this.normalizeOrdinal(column, Infinity);
+		let index = 0;
+		for (const position of this.displayPositions(this.selectionHead)) {
+			if (position.column > column) break;
+			index = position.index;
+			if (position.column === column) break;
+		}
+		return index;
+	}
+
+	protected moveColumn(direction: -1 | 1) {
+		const position = this.buffer.positionAt(this.selectionHead);
+		const segment = Graphemes.segment(this.buffer.getLine(position.line)).containing(position.ch - (direction < 0 ? 1 : 0));
+		if (!segment) return this.moveHorizontal(direction);
+		let next = this.selectionHead - position.ch + segment.index + (direction > 0 ? segment.segment.length : 0);
+		const hidden = this.folding.hiddenAt(next);
+		if (hidden) next = direction > 0 ? hidden.to : hidden.from;
+		this.goTo(next);
 	}
 
 	protected moveHorizontal(direction: -1 | 1, count = 1) {
