@@ -189,13 +189,13 @@ export default spec('Source line rendering benchmarks', async s => {
 			'display:block;width:320px;height:160px;font:12px monospace';
 		source.setText(createLargeSource(HistoryLineCount));
 		await a.sleep(20);
-		const anchor = source.cursor.indexAt({ line: 0, ch: 1 });
+		const anchor = source.cursorY.position(0).start + 1;
 		let line = HistoryLineCount - 1;
 
 		await a.benchmark(() => {
 			source.selection.block(
 				anchor,
-				source.cursor.indexAt({ line, ch: 5 }),
+				source.cursorY.position(line).start + 5,
 			);
 			line = line === HistoryLineCount - 1 ? HistoryLineCount - 2 : HistoryLineCount - 1;
 			return source.cursor.index;
@@ -249,7 +249,7 @@ export default spec('Source line rendering benchmarks', async s => {
 		source.cursor.go(5);
 		await a.benchmark(() => {
 			source.cursorY.nextLogical();
-			source.cursor.goPreservingGoal(7);
+			source.cursor.go(7);
 			source.cursorY.previousLogical();
 			return source.cursor.index;
 		}, { ...featureBenchmarkOptions, maxRegression: 25 });

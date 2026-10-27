@@ -12,6 +12,7 @@ import {
 	type SourceToken,
 	type SourceChange,
 	type SourceCheckpointFeature,
+		type SourceCursorFeature,
 	type SourceDecorationFragment,
 	type SourceTokenFeature,
 } from './index.js';
@@ -20,6 +21,10 @@ import { HitTest } from './hit-test.js';
 import { SourceHighlight } from './highlight.js';
 import { SourceFolding } from './fold.js';
 import { textCanvas, type SourceLine } from './text.js';
+
+function cursorCoordinates(source: Source) {
+	return { line: source.cursorY.index, ch: source.cursorX.index };
+}
 
 function fullScan(highlighter: SourceHighlighter, value: string): Iterable<SourceToken> {
 	return typeof highlighter === 'function' ? highlighter(value) : highlighter.resume({ source: {
@@ -1148,6 +1153,17 @@ export default spec('@cxl/ui.source', a => {
 			a.equal(source.scrollY.getVisibleMiddle(), 23 + source.clientHeight / 2);
 			a.equal(source.scrollY.getVisibleLast(), 23 + source.clientHeight);
 			a.equalValues(source.scrollY.range(30, 10), { start: 10, end: 30 });
+			for (const cursor of [source.scrollX, source.scrollY]) {
+				const index = cursor.index;
+				a.equalValues(cursor.position(), { start: index, end: index });
+				a.equal(cursor.indexAt(index), index);
+				cursor.nextLogical(5);
+				cursor.previousLogical(5);
+				cursor.reveal('middle');
+				a.equal(cursor.index, index);
+				a.equalValues(cursor.position(-Infinity), { start: 0, end: 0 });
+				a.equal(cursor.indexAt(NaN), index);
+			}
 			source.scrollY.go(NaN);
 			a.equal(source.scrollY.index, 23);
 			source.scrollY.goEnd();
@@ -1290,8 +1306,9 @@ export default spec('@cxl/ui.source', a => {
 			detached.setText('longer\nx\nlongest');
 			detached.cursor.go(5);
 			detached.cursorY.nextLogical();
-			detached.cursor.goPreservingGoal(7);
-			detached.cursor.reveal();
+			detached.cursor.go(7);
+			for (const cursor of [detached.cursor, detached.cursorX, detached.cursorY, detached.cursorToken, detached.scrollX, detached.scrollY])
+				cursor.reveal();
 			detached.cursorY.previousLogical();
 			a.equal(detached.cursor.index, 5);
 			const { source } = await createSourceEditor(a, 'value\n'.repeat(300));
@@ -2379,8 +2396,8 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 					protected override connectedCallback() {
 						super.connectedCallback();
 						this.selection.block(
-							this.cursor.indexAt({ line: 0, ch: 1 }),
-							this.cursor.indexAt({ line: 2, ch: 4 }),
+							this.cursorY.position(0).start + 1,
+							this.cursorY.position(2).start + 4,
 						);
 					}
 				},
@@ -2601,7 +2618,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 
 		it.testElement('creates rectangular block selections', async a => {
 			const { source } = await createSourceEditor(a, 'abcd\nx\n\nwxyz');
-			const end = source.cursor.indexAt({ line: 3, ch: 3 });
+			const end = source.cursorY.position(3).start + 3;
 
 			source.selection.block(1, end);
 			a.equalValues(source.selection.ranges(), [
@@ -2633,8 +2650,8 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 		it.testElement('edits multiple selections as one history entry', async a => {
 			const { source } = await createSourceEditor(a, 'ab\ncd');
 			source.selection.block(
-				source.cursor.indexAt({ line: 0, ch: 1 }),
-				source.cursor.indexAt({ line: 1, ch: 1 }),
+				source.cursorY.position(0).start + 1,
+				source.cursorY.position(1).start + 1,
 			);
 
 			source.edit.replace('X');
@@ -2707,10 +2724,69 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			a.assert(source instanceof Source);
 			a.ok(Reflect.has(source, 'scrollX'), 'horizontal scroll cursor is available');
 			a.ok(Reflect.has(source, 'scrollY'), 'vertical scroll cursor is available');
-			for (const cursor of [source.cursor, source.cursorX, source.cursorY, source.cursorToken]) {
+			for (const cursor of [source.cursor, source.cursorX, source.cursorY, source.cursorToken, source.scrollX, source.scrollY]) {
 				a.ok(Reflect.has(cursor, 'getVisibleFirst'));
 				a.ok(Reflect.has(cursor, 'getVisibleMiddle'));
 				a.ok(Reflect.has(cursor, 'getVisibleLast'));
+				for (const method of ['position', 'indexAt', 'reveal', 'nextLogical', 'previousLogical'])
+					a.ok(Reflect.has(cursor, method), `${method} is available on every cursor`);
+			}
+		});
+
+		it.testElement('maps column ranges into document offsets without moving the cursor', async a => {
+			const source = a.element(Source);
+			source.setText('one\nthree');
+			source.cursor.go(6);
+			a.equalValues(source.cursorX.range(1, 3), { start: 5, end: 7 });
+			a.equalValues(source.cursorX.range(3, 1), { start: 5, end: 7 });
+			a.equalValues(source.cursorX.range(-Infinity, Infinity), { start: 4, end: 9 });
+			a.equalValues(source.cursorX.range(NaN), { start: 4, end: 4 });
+			a.equal(source.cursor.index, 6);
+		});
+
+		it.testElement('maps every text cursor between its index and document ranges', async a => {
+			const { source } = await createSourceEditor(a, 'alpha 12\nbeta');
+			source.mode = 'javascript';
+			await loadSourceHighlighter(source.mode);
+			await a.sleep(20);
+			source.cursor.go(10);
+			const cases: { cursor: SourceCursorFeature; index: number; start: number; end: number }[] = [
+				{ cursor: source.cursor, index: 10, start: 10, end: 10 },
+				{ cursor: source.cursorX, index: 1, start: 10, end: 10 },
+				{ cursor: source.cursorY, index: 1, start: 9, end: 13 },
+				{ cursor: source.cursorToken, index: 2, start: 9, end: 13 },
+			];
+			for (const { cursor, index, start, end } of cases) {
+				a.equal(cursor.index, index);
+				a.equalValues(cursor.position(), { start, end });
+				a.equalValues(cursor.position(index), { start, end });
+				a.equal(cursor.indexAt(start), index);
+				a.equal(cursor.position(Infinity).end, 13);
+				a.equal(cursor.indexAt(NaN), 0);
+				a.equalValues(cursor.position(NaN), cursor.position(-Infinity));
+			}
+			a.equal(source.cursor.index, 10);
+			source.cursorToken.goStart();
+			source.cursorToken.nextLogical(2);
+			a.equal(source.cursor.index, 9);
+			source.cursorToken.previousLogical(2);
+			a.equal(source.cursor.index, 0);
+		});
+
+		it.testElement('shares counted logical horizontal navigation across newlines', async a => {
+			const source = a.element(Source);
+			source.setText('a\r\nbc');
+			for (const cursor of [source.cursor, source.cursorX]) {
+				source.selection.set(1);
+				cursor.nextLogical(2);
+				a.equal(source.cursor.index, 4);
+				cursor.previousLogical(2);
+				a.equal(source.cursor.index, 1);
+				for (const count of [0, -1, 0.5, NaN, Infinity]) {
+					cursor.nextLogical(count);
+					cursor.previousLogical(count);
+					a.equal(source.cursor.index, 1);
+				}
 			}
 		});
 
@@ -2726,8 +2802,8 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			a.equal(cursor.index, 6);
 			a.equalValues(cursor.range(), { start: 6, end: 6 });
 			a.equalValues(cursor.range(6, 2), { start: 2, end: 6 });
-			a.equalValues(source.cursor.position(), { line: 1, ch: 2 });
-			a.equal(source.cursor.indexAt({ line: 2, ch: 3 }), 11);
+			a.equalValues(source.cursor.position(), { start: 6, end: 6 });
+			a.equal(source.cursor.indexAt(11), 11);
 
 			cursor.go(Infinity);
 			a.equal(cursor.index, source.getText().length);
@@ -2740,9 +2816,9 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			a.equal(source.cursorX.index, 2);
 			source.cursorX.next();
 			source.cursorX.next();
-			a.equalValues(source.cursor.position(), { line: 1, ch: 0 });
+			a.equalValues(cursorCoordinates(source), { line: 1, ch: 0 });
 			source.cursorX.previous();
-			a.equalValues(source.cursor.position(), { line: 0, ch: 3 });
+			a.equalValues(cursorCoordinates(source), { line: 0, ch: 3 });
 			a.equalValues(source.cursorX.range(3, 1), { start: 1, end: 3 });
 			source.cursorX.goEnd();
 			a.equal(source.cursor.index, 3);
@@ -2782,7 +2858,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			source.setText('one\r\ntwo');
 			source.cursor.go(3);
 			source.cursorX.next();
-			a.equalValues(source.cursor.position(), { line: 1, ch: 0 });
+			a.equalValues(cursorCoordinates(source), { line: 1, ch: 0 });
 			source.cursorX.previous();
 			a.equal(source.cursor.index, 3);
 		});
@@ -3436,8 +3512,8 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 		it.testElement('edits and copies block selections through native input', async a => {
 			const { source, target } = await createSourceEditor(a, 'ab\ncd');
 			source.selection.block(
-				source.cursor.indexAt({ line: 0, ch: 0 }),
-				source.cursor.indexAt({ line: 1, ch: 1 }),
+				source.cursorY.position(0).start,
+				source.cursorY.position(1).start + 1,
 			);
 			a.equal(clipboardSelection(target), 'a\nc');
 
@@ -3487,7 +3563,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			);
 			source.selection.block(
 				0,
-				source.cursor.indexAt({ line: 80, ch: 2 }),
+				source.cursorY.position(80).start + 2,
 			);
 			await a.sleep(50);
 			a.ok(source.scrollTop > 0, 'block head scrolls into the viewport');
@@ -3549,8 +3625,8 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			const editContext = source.editContext;
 			a.assert(editContext, 'EditContext is active');
 			source.selection.block(
-				source.cursor.indexAt({ line: 0, ch: 1 }),
-				source.cursor.indexAt({ line: 1, ch: 1 }),
+				source.cursorY.position(0).start + 1,
+				source.cursorY.position(1).start + 1,
 			);
 
 			editContext.dispatchEvent(
@@ -3724,6 +3800,24 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 				a.equal(source.cursor.index, 3, 'editing resets preference');
 			});
 
+		it.testElement('establishes the vertical goal at a fresh cursor destination', async a => {
+			const source = a.element(Source);
+			source.setText('longer\nx\nlongest');
+			source.cursor.go(5);
+			source.cursor.go(3);
+			source.cursorY.nextLogical(2);
+			a.equal(source.cursorX.index, 3);
+		});
+
+		it.testElement('preserves visual goals through cursor endpoint corrections', async a => {
+			const { source } = await createSourceEditor(a, 'longer\nx\nlongest');
+			source.cursor.go(5);
+			source.cursorY.next();
+			source.cursor.go(7);
+			source.cursorY.previous();
+			a.equal(source.cursor.index, 5);
+		});
+
 		for (const ready of [false, true]) for (const paint of [false, true])
 			it.testElement(`preserves logical goals with ready=${ready}, paint=${paint}`, async a => {
 				const source = a.element(Source);
@@ -3733,12 +3827,12 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 				source.cursor.go(5);
 				source.cursorY.nextLogical();
 				a.equal(source.cursor.index, 8, 'Source keeps insertion endpoints');
-				source.cursor.goPreservingGoal(7);
+				source.cursor.go(7);
 				if (paint) await a.sleep(40);
 				source.cursorY.previousLogical();
 				a.equal(source.cursor.index, 5, 'endpoint correction preserves the original goal');
 				source.cursorY.nextLogical(3);
-				a.equalValues(source.cursor.position(), { line: 3, ch: 5 });
+				a.equalValues(cursorCoordinates(source), { line: 3, ch: 5 });
 				source.cursorY.previousLogical(3);
 				a.equal(source.cursor.index, 5, 'empty-line roundtrip');
 				source.cursorY.nextLogical();
@@ -3756,7 +3850,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			a.ok(source.cursorX.index > start);
 			source.cursor.go(start);
 			source.cursorY.nextLogical();
-			a.equalValues(source.cursor.position(), { line: 1, ch: 4 });
+			a.equalValues(cursorCoordinates(source), { line: 1, ch: 4 });
 			source.cursorY.previousLogical();
 			a.equal(source.cursor.index, start);
 			a.equal(source.scrollY.index, 0);
@@ -3765,7 +3859,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 		it.testElement('logical movement respects graphemes, tabs, counts and document bounds', async a => {
 			const { source } = await createSourceEditor(a, 'abcdef\n\t😀e\u0301z\nabcdef');
 			for (const [goal, expected] of [[2, 1], [4, 3], [5, 5]] as const) {
-				source.cursor.go(goal);
+				source.selection.set(goal);
 				source.cursorY.nextLogical();
 				a.equal(source.cursorX.index, expected, 'never lands within a grapheme');
 				source.cursorY.nextLogical();
@@ -3781,10 +3875,10 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			source.cursorY.previousLogical(100);
 			a.equal(source.cursor.index, 5);
 			source.cursorY.nextLogical(100);
-			a.equalValues(source.cursor.position(), { line: 2, ch: 5 });
-			source.cursor.goPreservingGoal(Infinity);
+			a.equalValues(cursorCoordinates(source), { line: 2, ch: 5 });
+			source.cursor.go(Infinity);
 			a.equal(source.cursor.index, source.getText().length);
-			source.cursor.goPreservingGoal(NaN);
+			source.cursor.go(NaN);
 			a.equal(source.cursor.index, 0);
 			source.cursorY.nextLogical(2);
 			a.equal(source.cursorX.index, 5);
@@ -3808,7 +3902,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 				const range = source.cursorY.range();
 				if (range.end > range.start && source.cursor.index === range.end) {
 					const last = graphemes.segment(source.getText(range.start, range.end)).containing(range.end - range.start - 1);
-					if (last) source.cursor.goPreservingGoal(range.start + last.index);
+					if (last) source.cursor.go(range.start + last.index);
 				}
 				source.cursor.reveal();
 			};
@@ -3844,7 +3938,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 				source.cursor.go(start);
 				const before = source.geometry.caret(start);
 				for (let i = 0; i < 3; i++) source.cursorY.next();
-				a.equal(source.cursor.position().ch, start);
+				a.equal(source.cursorX.index, start);
 				for (let i = 0; i < 3; i++) source.cursorY.previous();
 				a.equal(source.cursor.index, start);
 				a.equalValues(source.geometry.caret(start), before, 'caret geometry is unchanged');
@@ -3858,7 +3952,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 
 			source.cursor.goStart();
 			source.cursorY.next();
-			const wrapped = source.cursor.position();
+			const wrapped = cursorCoordinates(source);
 			a.equal(wrapped.line, 0);
 			a.ok(wrapped.ch > 0, 'cursor advances within the wrapped line');
 			source.cursorY.previous();
@@ -3866,6 +3960,10 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			source.cursor.go(5);
 			source.cursorY.next();
 			a.equal(source.cursorY.index, 0);
+			source.cursorY.previous();
+			a.equal(source.cursor.index, 0, 'go preserves the existing visual goal');
+			source.cursorX.go(5);
+			source.cursorY.next();
 			source.cursorY.previous();
 			a.equal(source.cursor.index, 5);
 		});
@@ -3881,8 +3979,8 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			const measure = source.shadowRoot?.querySelector<HTMLElement>('#measure');
 			a.assert(canvas && measure, 'selection rendering surface exists');
 			source.selection.block(
-				source.cursor.indexAt({ line: 0, ch: 8 }),
-				source.cursor.indexAt({ line: 1, ch: 60 }),
+				source.cursorY.position(0).start + 8,
+				source.cursorY.position(1).start + 60,
 			);
 			await a.sleep(20);
 			const bounds = paintedBounds(canvas);
@@ -3903,7 +4001,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			source.cursorX.go(2);
 			source.cursor.reveal();
 			await a.sleep(100);
-			a.equalValues(source.cursor.position(), { line: 149, ch: 2 });
+			a.equalValues(cursorCoordinates(source), { line: 149, ch: 2 });
 			a.equal(source.geometry.caret(source.cursor.index).status, 'visible', 'distant navigation reveals the caret');
 			const caret = source.geometry.caret(source.cursor.index);
 			a.assert(caret.status === 'visible');
@@ -3914,7 +4012,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			source.cursorX.go(3);
 			source.cursor.reveal();
 			await a.sleep(100);
-			a.equalValues(source.cursor.position(), { line: 29, ch: 3 });
+			a.equalValues(cursorCoordinates(source), { line: 29, ch: 3 });
 			a.equal(source.geometry.caret(source.cursor.index).status, 'visible', 'reverse navigation after resize reveals the caret');
 			const head = source.cursorY.range(179).start + 2;
 			source.selection.set(head - 2, head);
@@ -3966,7 +4064,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 				source.cursorX.go(2);
 				source.cursor.reveal();
 				await a.sleep(100);
-				a.equalValues(source.cursor.position(), { line, ch: 2 });
+				a.equalValues(cursorCoordinates(source), { line, ch: 2 });
 				a.equal(source.geometry.caret(source.cursor.index).status, 'visible', `line ${line + 1} is revealed`);
 				a.ok(renderedLines > 0 && renderedLines < 50, 'rendering remains viewport bounded');
 				a.equal(source.fold.range(10)?.closed, true);
@@ -4219,6 +4317,23 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 	});
 
 	a.test('folding', it => {
+		it.testElement('roundtrips column mappings through a collapsed projection', async a => {
+			const source = await createFoldEditor(a, 'ab{\nhidden\n}cd\ntail');
+			source.fold.closeAll();
+			await a.sleep(20);
+			source.cursorX.goEnd();
+			const end = source.getText().indexOf('\ntail');
+			a.equal(source.cursor.index, end);
+			a.equalValues(source.cursorX.position(), { start: end, end });
+			a.equal(source.cursorX.indexAt(end), source.cursorX.index);
+			a.equalValues(source.cursorX.range(0, Infinity), { start: 0, end });
+			source.cursorX.goStart();
+			const column = source.cursorX.indexAt(end);
+			source.cursorX.go(column);
+			a.equal(source.cursor.index, end);
+			a.ok(source.fold.ranges[0]?.closed);
+		});
+
 		it.testElement('keeps open fold indicators through pending edits', async (a: TestApi) => {
 			const { source } = await createSourceEditor(a, 'function example() {\n  const value = 12;\n}\nafter();');
 			source.mode = 'javascript';
@@ -4645,10 +4760,10 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			await a.sleep(40);
 			source.cursor.go(5);
 			source.cursorY.nextLogical();
-			a.equalValues(source.cursor.position(), { line: 3, ch: 1 });
-			source.cursor.goPreservingGoal(source.cursorY.range().start);
+			a.equalValues(cursorCoordinates(source), { line: 3, ch: 1 });
+			source.cursor.go(source.cursorY.range().start);
 			source.cursorY.nextLogical();
-			a.equalValues(source.cursor.position(), { line: 4, ch: 5 });
+			a.equalValues(cursorCoordinates(source), { line: 4, ch: 5 });
 			source.cursorY.previousLogical(2);
 			a.equal(source.cursor.index, 5);
 			a.equal(source.fold.range(0)?.closed, true);
@@ -4662,7 +4777,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			source.cursorY.next();
 			a.equal(source.cursorY.index, 3);
 			source.cursorY.next();
-			a.equal(source.cursor.position().ch, 12);
+			a.equal(source.cursorX.index, 12);
 			source.cursorY.previous();
 			source.cursorY.previous();
 			a.equal(source.cursor.index, 12);

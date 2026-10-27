@@ -142,9 +142,8 @@ createEditor([
 				source.gutters = gutters;
 			};
 			const updatePosition = () => {
-				const cursor = source.cursor.position();
 				const selection = source.selection.range();
-				position.textContent = `Ln ${cursor.line + 1}, Col ${cursor.ch + 1} · ${selection.end - selection.start} selected`;
+				position.textContent = `Ln ${source.cursorY.index + 1}, Col ${source.cursorX.index + 1} · ${selection.end - selection.start} selected`;
 			};
 			const setText = (value, message) => {
 				source.setText(value);

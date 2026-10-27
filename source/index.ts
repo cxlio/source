@@ -145,31 +145,24 @@ export interface SourceTokenFeature {
 
 export type SourceCursorAlignment = 'nearest' | 'start' | 'middle' | 'end';
 
-export interface SourceCursorNavigationFeature {
+export interface SourceCursorFeature {
 	readonly index: number;
 	go(index: number): void;
 	range(from?: number, to?: number): SourceRange;
+	position(index?: number): SourceRange;
+	indexAt(position: number): number;
+	reveal(alignment?: SourceCursorAlignment): void;
 	goStart(): void;
 	goEnd(): void;
 	next(count?: number): void;
 	previous(count?: number): void;
+	nextLogical(count?: number): void;
+	previousLogical(count?: number): void;
 	nextPage(count?: number): void;
 	previousPage(count?: number): void;
 	getVisibleFirst(): number | undefined;
 	getVisibleMiddle(): number | undefined;
 	getVisibleLast(): number | undefined;
-}
-
-export interface SourceCursorFeature extends SourceCursorNavigationFeature {
-	goPreservingGoal(index: number): void;
-	reveal(alignment?: SourceCursorAlignment): void;
-	indexAt(position: SourcePosition): number;
-	position(index?: number): SourcePosition;
-}
-
-export interface SourceCursorYFeature extends SourceCursorNavigationFeature {
-	nextLogical(count?: number): void;
-	previousLogical(count?: number): void;
 }
 
 export interface SourceHistoryFeature {
@@ -301,19 +294,13 @@ export class Source extends Code {
 	};
 	readonly cursor: SourceCursorFeature = (() => {
 		const source = this;
-		return {
+		return source.cursorFeature({
 			get index() {
 				return source.selectionHead;
 			},
-			go: index => source.goTo(index),
-			goPreservingGoal: index => source.goTo(index, true),
-			reveal: (alignment = 'nearest') => {
-				if (source.isConnected) source.revealSelection?.(alignment);
-			},
+			go: index => source.goTo(index, source.preferredIndex !== undefined),
 			...source.visibleTargets(position => source.buffer.indexAt(position)),
-			indexAt: position => source.buffer.indexAt(position),
-			position: (index = source.selectionHead) =>
-				source.buffer.positionAt(source.clampSelection(index)),
+			indexAt: index => source.clampSelection(index),
 			range: (from = source.selectionHead, to = from) => ({
 				start: source.clampSelection(Math.min(from, to)),
 				end: source.clampSelection(Math.max(from, to)),
@@ -324,24 +311,25 @@ export class Source extends Code {
 			previous: (count = 1) => source.repeatNavigation(count, () => source.moveHorizontal(-1)),
 			nextPage: (count = 1) => source.repeatNavigation(count, () => source.moveHorizontal(1, 10)),
 			previousPage: (count = 1) => source.repeatNavigation(count, () => source.moveHorizontal(-1, 10)),
-		};
+		});
 	})();
-	readonly cursorX: SourceCursorNavigationFeature = (() => {
+	readonly cursorX: SourceCursorFeature = (() => {
 		const source = this;
-		return {
+		return source.cursorFeature({
 			get index() {
-				return source.buffer.positionAt(source.selectionHead).ch;
+				return source.folding.columnAt(source.selectionHead);
 			},
 			go: index => source.goColumn(index),
-			...source.visibleTargets(position => position.ch, true),
+			indexAt: index => source.folding.columnAt(source.clampSelection(index)),
+			...source.visibleTargets(position => source.folding.columnAt(source.buffer.indexAt(position)), true),
 			range: (from = source.cursorX.index, to = from) => {
 				const line = source.buffer.positionAt(source.selectionHead).line;
-				const start = source.buffer.indexAt({ line, ch: from });
-				const end = source.buffer.indexAt({ line, ch: to });
-				const lineStart = source.buffer.indexAt({ line, ch: 0 });
+				const row = source.folding.lineAt(source.folding.rowAt(line));
+				const start = source.folding.indexAt(row, source.normalizeOrdinal(from, Infinity));
+				const end = from === to ? start : source.folding.indexAt(row, source.normalizeOrdinal(to, Infinity));
 				return {
-					start: Math.min(start, end) - lineStart,
-					end: Math.max(start, end) - lineStart,
+					start: Math.min(start, end),
+					end: Math.max(start, end),
 				};
 			},
 			goStart: () => source.goColumn(0),
@@ -350,15 +338,16 @@ export class Source extends Code {
 			previous: (count = 1) => source.repeatNavigation(count, () => source.moveHorizontal(-1)),
 			nextPage: (count = 1) => source.repeatNavigation(count, () => source.goColumn(source.cursorX.index + 10)),
 			previousPage: (count = 1) => source.repeatNavigation(count, () => source.goColumn(source.cursorX.index - 10)),
-		};
+		});
 	})();
-	readonly cursorY: SourceCursorYFeature = (() => {
+	readonly cursorY: SourceCursorFeature = (() => {
 		const source = this;
-		return {
+		return source.cursorFeature({
 			get index() {
 				return source.buffer.positionAt(source.selectionHead).line;
 			},
 			go: index => source.goLine(index),
+			indexAt: index => source.buffer.positionAt(source.clampSelection(index)).line,
 			...source.visibleTargets(position => position.line),
 			range: (from = source.cursorY.index, to = from) =>
 				source.buffer.lineRange(from, to),
@@ -370,15 +359,16 @@ export class Source extends Code {
 			previousLogical: (count = 1) => source.repeatNavigation(count, () => source.moveLogical(-1)),
 			nextPage: (count = 1) => source.repeatNavigation(count, () => source.movePage(1)),
 			previousPage: (count = 1) => source.repeatNavigation(count, () => source.movePage(-1)),
-		};
+		});
 	})();
-	readonly cursorToken: SourceCursorNavigationFeature = (() => {
+	readonly cursorToken: SourceCursorFeature = (() => {
 		const source = this;
-		return {
+		return source.cursorFeature({
 			get index() {
 				return source.tokenIndex();
 			},
 			go: index => source.goToken(index),
+			indexAt: index => source.tokenIndex(source.clampSelection(index)),
 			...source.visibleTargets(position => source.tokenIndex(source.buffer.indexAt(position))),
 			range: (from = source.tokenIndex(), to = from) =>
 				source.tokenRange(from, to),
@@ -388,10 +378,10 @@ export class Source extends Code {
 			previous: (count = 1) => source.repeatNavigation(count, () => source.goToken(source.tokenIndex() - 1, -1)),
 			nextPage: (count = 1) => source.repeatNavigation(count, () => source.goToken(source.tokenIndex() + 10, 1)),
 			previousPage: (count = 1) => source.repeatNavigation(count, () => source.goToken(source.tokenIndex() - 10, -1)),
-		};
+		});
 	})();
-	readonly scrollX: SourceCursorNavigationFeature = this.scrollCursor('x');
-	readonly scrollY: SourceCursorNavigationFeature = this.scrollCursor('y');
+	readonly scrollX: SourceCursorFeature = this.scrollCursor('x');
+	readonly scrollY: SourceCursorFeature = this.scrollCursor('y');
 	readonly selection: SourceSelectionFeature = (() => {
 		const source = this;
 		return {
@@ -917,7 +907,7 @@ canvas {
 					}
 
 					function moveSelection(
-						feature: SourceCursorNavigationFeature,
+						feature: SourceCursorFeature,
 						movement: CursorMovement,
 						extend: boolean,
 						block: boolean,
@@ -951,7 +941,7 @@ canvas {
 						const { selectionAnchor: anchor, selectionHead: head } = $;
 						const blockAnchor = $.blockAnchor ?? anchor;
 						let next: number | undefined;
-						let feature: SourceCursorNavigationFeature | undefined;
+						let feature: SourceCursorFeature | undefined;
 						let movement: CursorMovement | undefined;
 						clipboardKey(event);
 						if (insertKey(event)) return;
@@ -1181,6 +1171,31 @@ canvas {
 		return this.selectionState.at(-1) ?? DefaultSelection;
 	}
 
+	protected cursorFeature(feature: Omit<SourceCursorFeature, 'position' | 'reveal' | 'nextLogical' | 'previousLogical'> &
+		Partial<Pick<SourceCursorFeature, 'reveal' | 'nextLogical' | 'previousLogical'>>): SourceCursorFeature {
+		return {
+			get index() { return feature.index; },
+			go: feature.go,
+			range: feature.range,
+			position: (index = feature.index) => feature.range(index),
+			indexAt: feature.indexAt,
+			reveal: feature.reveal ?? ((alignment: SourceCursorAlignment = 'nearest') => {
+				if (this.isConnected) this.revealSelection?.(alignment);
+			}),
+			goStart: feature.goStart,
+			goEnd: feature.goEnd,
+			next: feature.next,
+			previous: feature.previous,
+			nextLogical: feature.nextLogical ?? feature.next,
+			previousLogical: feature.previousLogical ?? feature.previous,
+			nextPage: feature.nextPage,
+			previousPage: feature.previousPage,
+			getVisibleFirst: feature.getVisibleFirst,
+			getVisibleMiddle: feature.getVisibleMiddle,
+			getVisibleLast: feature.getVisibleLast,
+		};
+	}
+
 	protected visibleTargets(map: (position: SourcePosition) => number, horizontal = false) {
 		const get = (fraction: 0 | 0.5 | 1) => {
 			if (!this.isConnected || !this.host.clientWidth || !this.host.clientHeight || !this.text.measured) return;
@@ -1194,7 +1209,7 @@ canvas {
 		};
 	}
 
-	protected scrollCursor(axis: 'x' | 'y'): SourceCursorNavigationFeature {
+	protected scrollCursor(axis: 'x' | 'y'): SourceCursorFeature {
 		const source = this;
 		const scroll = axis === 'x' ? 'scrollLeft' : 'scrollTop';
 		const extent = () => axis === 'x' ? source.clientWidth : source.clientHeight;
@@ -1206,9 +1221,11 @@ canvas {
 		};
 		const visible = (fraction: number) => source.isConnected && extent() > 0
 			? source[scroll] + extent() * fraction : undefined;
-		return {
+		return source.cursorFeature({
 			get index() { return source[scroll]; },
 			go,
+			indexAt: clamp,
+			reveal: () => go(source[scroll]),
 			range: (from = source[scroll], to = from) => ({ start: Math.min(clamp(from), clamp(to)), end: Math.max(clamp(from), clamp(to)) }),
 			goStart: () => go(0),
 			goEnd: () => go(Infinity),
@@ -1219,7 +1236,7 @@ canvas {
 			getVisibleFirst: () => visible(0),
 			getVisibleMiddle: () => visible(0.5),
 			getVisibleLast: () => visible(1),
-		};
+		});
 	}
 
 	protected goTo(index: number, preserveGoal = false) {
@@ -1236,9 +1253,7 @@ canvas {
 	}
 
 	protected goColumn(ch: number) {
-		const { line } = this.buffer.positionAt(this.selectionHead);
-		const row = this.folding.lineAt(this.folding.rowAt(line));
-		this.goTo(this.folding.indexAt(row, ch));
+		this.goTo(this.cursorX.position(ch).start);
 	}
 
 	protected moveHorizontal(direction: -1 | 1, count = 1) {
