@@ -3834,6 +3834,67 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			]);
 		});
 
+		it.testElement('keeps canvas content unscaled when closing a side-by-side editor', async (a: TestApi) => {
+			const row = a.element('div');
+			row.style.cssText = 'display:flex;width:800px;height:160px;background:white;color:black';
+			const source = document.createElement('c-source');
+			const sibling = document.createElement('c-source');
+			a.assert(source instanceof Source && sibling instanceof Source);
+			for (const editor of [source, sibling]) {
+				editor.style.cssText = 'flex:1;min-width:0;height:160px;font:16px/20px monospace';
+				editor.setText('                    CONTENT\nsecond line');
+				row.append(editor);
+			}
+			source.selection.set(20, 27);
+			await a.sleep(75);
+			for (const layer of ['behind-text', 'above-text'] as const)
+				source.decorations.create({
+					layer,
+					paint: ({ context, fragments }) => {
+						context.fillStyle = layer === 'behind-text' ? '#def' : '#246';
+						for (const rect of fragments)
+							context.fillRect(rect.x, rect.y + (layer === 'above-text' ? rect.height - 2 : 0), rect.width, layer === 'above-text' ? 2 : rect.height);
+					},
+				}).add({ range: { start: 28, end: 39 }, value: undefined });
+			const canvases = [...(source.shadowRoot?.querySelectorAll('canvas') ?? [])];
+			a.equal(canvases.length, 4, 'checks text, cursor, and both decoration layers');
+			const checkScale = () => {
+				for (const canvas of canvases) {
+					const rect = canvas.getBoundingClientRect();
+					a.ok(Math.abs(rect.width * devicePixelRatio - canvas.width) < 1, `${canvas.part.value} width is unscaled`);
+					a.ok(Math.abs(rect.height * devicePixelRatio - canvas.height) < 1, `${canvas.part.value} height is unscaled`);
+				}
+			};
+			for (let cycle = 0; cycle < 2; cycle++) {
+				checkScale();
+				sibling.remove();
+				a.equal(source.clientWidth, 800, 'remaining editor fills the row');
+				checkScale();
+				if (!cycle) {
+					const snapshot = document.createElement('canvas');
+					snapshot.width = 800 * devicePixelRatio;
+					snapshot.height = 160 * devicePixelRatio;
+					const context = snapshot.getContext('2d');
+					a.assert(context);
+					context.scale(devicePixelRatio, devicePixelRatio);
+					for (const canvas of canvases) {
+						const rect = canvas.getBoundingClientRect();
+						context.drawImage(canvas, 0, 0, rect.width, rect.height);
+					}
+					a.figure('side-by-side-close', `<img alt="Editor content immediately after closing its sibling" width="800" height="160" src="${snapshot.toDataURL()}">`, node => {
+						(node as HTMLElement).style.width = '800px';
+					})?.catch(error => a.ok(false, String(error)));
+				}
+				await a.sleep(75);
+				checkScale();
+				row.append(sibling);
+				a.equal(source.clientWidth, 400, 'reopened editor halves the row');
+				checkScale();
+				await a.sleep(75);
+			}
+			checkScale();
+		});
+
 		it.testElement('keep text fixed through first focus and edit', async (a: TestApi) => {
 			const { source, target } = await createSourceEditor(a, 'MMMM');
 			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>(

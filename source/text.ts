@@ -84,6 +84,9 @@ export type TextCanvas = ReturnType<typeof textCanvas>;
 
 export function getContext() {
 	const canvas = document.createElement('canvas');
+	const dpr = window.devicePixelRatio || 1;
+	canvas.style.width = `${canvas.width / dpr}px`;
+	canvas.style.height = `${canvas.height / dpr}px`;
 	const context = canvas.getContext('2d');
 
 	if (!context) throw new Error('Could not acquire context');
@@ -351,6 +354,8 @@ export function textCanvas(host: HTMLElement) {
 		const w = host.clientWidth * dpr;
 		const h = host.clientHeight * dpr;
 		if (w !== ctx.canvas.width || h !== ctx.canvas.height) {
+			canvas.style.width = `${w / dpr}px`;
+			canvas.style.height = `${h / dpr}px`;
 			ctx.canvas.width = w;
 			ctx.canvas.height = h;
 			ctx.scale(dpr, dpr);

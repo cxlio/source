@@ -310,6 +310,8 @@ function resize({ canvas, context }: DecorationSurface) {
 	const width = (host?.clientWidth ?? 0) * dpr;
 	const height = (host?.clientHeight ?? 0) * dpr;
 	if (canvas.width !== width || canvas.height !== height) {
+		canvas.style.width = `${width / dpr}px`;
+		canvas.style.height = `${height / dpr}px`;
 		canvas.width = width;
 		canvas.height = height;
 		context.scale(dpr, dpr);

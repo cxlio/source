@@ -54,6 +54,8 @@ export function sourceCursor(host: Element, text: HTMLCanvasElement) {
 		const w = width * dpr;
 		const h = height * dpr;
 		if (w !== ctx.canvas.width || h !== ctx.canvas.height) {
+			canvas.style.width = `${width}px`;
+			canvas.style.height = `${height}px`;
 			ctx.canvas.width = w;
 			ctx.canvas.height = h;
 			ctx.scale(dpr, dpr);
