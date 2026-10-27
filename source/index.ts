@@ -841,7 +841,7 @@ canvas {
 							if (Math.abs(y) > 0.5) $.scrollTop += y;
 							if (Math.abs(x) > 0.5) $.scrollLeft += x;
 						} else {
-							$.scrollToRow($.folding.rowAt(position.line));
+							$.scrollToRow($.folding.rowAt(position.line), revealAlignment);
 						}
 						return !caret || !text.measured;
 					}
@@ -2102,7 +2102,7 @@ canvas {
 		this.refresh.next({ dataLength: this.folding.visibleCount, resetFrom: 0 });
 	}
 
-	protected scrollToRow(row: number) {
+	protected scrollToRow(row: number, alignment: SourceCursorAlignment) {
 		let top = row * EstimatedRowHeight;
 		let total = this.folding.visibleCount * EstimatedRowHeight;
 		for (const [index, height] of this.rowHeights) {
@@ -2112,7 +2112,11 @@ canvas {
 		}
 		const viewport = this.host.clientHeight;
 		const maximum = total - viewport;
-		this.scrollTop = maximum > 0 ? Math.ceil(Math.max(top - viewport / 2, 0) / maximum * (this.scrollHeight - this.clientHeight)) : 0;
+		const height = this.rowHeights.get(row) ?? EstimatedRowHeight;
+		const current = this.scrollTop / Math.max(1, this.scrollHeight - this.clientHeight) * maximum;
+		const target = alignment === 'start' ? top : alignment === 'middle' ? top - (viewport - height) / 2
+			: alignment === 'end' ? top + height - viewport : top < current ? top : Math.max(current, top + height - viewport);
+		this.scrollTop = maximum > 0 ? Math.ceil(Math.max(target, 0) / maximum * (this.scrollHeight - this.clientHeight)) : 0;
 	}
 
 	protected override replaced(change: BufferChange) {

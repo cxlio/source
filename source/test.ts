@@ -1353,6 +1353,25 @@ export default spec('@cxl/ui.source', a => {
 			a.equal(source.scrollY.index, 0);
 		});
 
+		it.testElement('reveals unrendered rows at the nearest viewport edge by default', async (a: TestApi) => {
+			const { source } = await createSourceEditor(a, 'value\n'.repeat(300));
+			source.style.lineHeight = '50px';
+			await a.sleep(75);
+			for (const line of [150, 25]) {
+				source.cursorY.go(line);
+				source.cursor.reveal();
+				await a.sleep(150);
+				const caret = source.geometry.caret(source.cursor.index);
+				a.assert(caret.status === 'visible');
+				const top = caret.bounds.y - source.getBoundingClientRect().y;
+				a.ok(line === 150 ? top >= source.clientHeight - 50 : top < 50, 'reveals at the nearest edge');
+				const scroll = source.scrollTop;
+				source.cursor.reveal();
+				await a.sleep(75);
+				a.equal(source.scrollTop, scroll, 'visible cursors do not scroll');
+			}
+		});
+
 		it.testElement('supports explicit reveal alignment and suppresses automatic revealing', async (a: TestApi) => {
 			const { source } = await createSourceEditor(a, 'value\n'.repeat(300));
 			source.cursorY.go(150);
