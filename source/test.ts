@@ -1137,21 +1137,27 @@ export default spec('@cxl/ui.source', a => {
 	});
 
 	a.test('viewport cursors', it => {
-		it.testElement('uses one navigation contract with pixel-based scroll cursors', async (a: TestApi) => {
-			const { source } = await createSourceEditor(a, 'line\n'.repeat(100));
+		it.testElement('uses one navigation contract with row and column scroll cursors', async (a: TestApi) => {
+			const { source } = await createSourceEditor(a, 'line\n'.repeat(300));
+			source.style.font = '16px/20px monospace';
+			await a.sleep(75);
+			const cell = a.element('div');
+			cell.style.cssText = 'width:1ch;height:1lh;font:16px/20px monospace';
+			const { width, height } = cell.getBoundingClientRect();
 			const selection = source.selection.ranges();
 			source.scrollY.go(20);
 			a.equal(source.scrollY.index, 20);
+			a.equal(source.scrollTop, 20 * height);
 			source.scrollY.next(5);
 			source.scrollY.previous(2);
 			a.equal(source.scrollY.index, 23);
 			source.scrollY.nextPage(0.5);
-			a.equal(source.scrollY.index, 23 + source.clientHeight / 2);
+			a.equal(source.scrollY.index, 23 + source.clientHeight / height / 2);
 			source.scrollY.previousPage(0.5);
 			a.equal(source.scrollY.index, 23);
 			a.equal(source.scrollY.getVisibleFirst(), 23);
-			a.equal(source.scrollY.getVisibleMiddle(), 23 + source.clientHeight / 2);
-			a.equal(source.scrollY.getVisibleLast(), 23 + source.clientHeight);
+			a.equal(source.scrollY.getVisibleMiddle(), 23 + source.clientHeight / height / 2);
+			a.equal(source.scrollY.getVisibleLast(), 23 + source.clientHeight / height);
 			a.equalValues(source.scrollY.range(30, 10), { start: 10, end: 30 });
 			for (const cursor of [source.scrollX, source.scrollY]) {
 				const index = cursor.index;
@@ -1167,18 +1173,103 @@ export default spec('@cxl/ui.source', a => {
 			source.scrollY.go(NaN);
 			a.equal(source.scrollY.index, 23);
 			source.scrollY.goEnd();
-			a.equal(source.scrollY.index, source.scrollHeight - source.clientHeight);
+			a.equal(source.scrollY.index, (source.scrollHeight - source.clientHeight) / height);
 			source.scrollY.nextPage();
-			a.equal(source.scrollY.index, source.scrollHeight - source.clientHeight);
+			a.equal(source.scrollY.index, (source.scrollHeight - source.clientHeight) / height);
 			source.scrollY.goStart();
 			source.scrollY.previous();
 			a.equal(source.scrollY.index, 0);
 			source.scrollX.goEnd();
-			a.equal(source.scrollX.index, Math.max(0, source.scrollWidth - source.clientWidth));
+			a.equal(source.scrollX.index, Math.max(0, source.scrollWidth - source.clientWidth) / width);
 			source.scrollX.goStart();
 			a.equal(source.scrollX.getVisibleFirst(), 0);
-			a.equal(source.scrollX.getVisibleLast(), source.clientWidth);
+			a.equal(source.scrollX.getVisibleLast(), source.clientWidth / width);
 			a.equalValues(source.selection.ranges(), selection);
+		});
+
+		it.testElement('scrolls columns and pages without moving the caret', async (a: TestApi) => {
+			const { source } = await createSourceEditor(a, 'line\n'.repeat(300));
+			source.style.font = '16px/20px monospace';
+			const gutter = a.element('div');
+			gutter.style.cssText = 'width:1200px;flex-shrink:0';
+			source.gutters = [{ element: gutter, render() {} }];
+			await a.sleep(75);
+			const cell = a.element('div');
+			cell.style.cssText = 'width:1ch;height:1lh;font:16px/20px monospace';
+			const width = cell.getBoundingClientRect().width;
+			a.ok(source.scrollWidth > source.clientWidth);
+			source.scrollX.go(4);
+			a.ok(Math.abs(source.scrollLeft - 4 * width) < 1);
+			source.scrollX.next(3);
+			source.scrollX.previous(1);
+			a.ok(Math.abs(source.scrollX.index - 6) < 1 / width);
+			a.ok(Math.abs(source.scrollLeft - 6 * width) < 1);
+			a.equalValues(source.scrollX.range(8, 2), { start: 2, end: 8 });
+			const before = source.scrollLeft;
+			source.scrollX.nextPage(0.5);
+			a.ok(Math.abs(source.scrollLeft - before - source.clientWidth / 2) < 0.02);
+			source.scrollX.previousPage(0.5);
+			a.ok(Math.abs(source.scrollX.index - 6) < 1 / width);
+			source.scrollX.reveal();
+			a.ok(Math.abs(source.scrollX.index - 6) < 1 / width);
+			source.scrollX.goEnd();
+			a.equal(source.scrollLeft, source.scrollWidth - source.clientWidth);
+			a.ok(Math.abs(source.scrollX.index - source.scrollLeft / width) < 0.001);
+			source.scrollX.next();
+			a.equal(source.scrollLeft, source.scrollWidth - source.clientWidth);
+			source.scrollX.goStart();
+			source.scrollX.previous();
+			a.equal(source.scrollX.index, 0);
+			source.style.transform = 'scale(1.5)';
+			source.scrollX.next(4);
+			a.ok(Math.abs(source.scrollLeft - 4 * width) < 1);
+			a.equal(source.cursor.index, 0);
+		});
+
+		it.testElement('uses visual row units through wrapping folding native scrolling and font changes', async (a: TestApi) => {
+			const source = await createFoldEditor(a, '{\nhidden\nhidden\n}\n' + 'wrapped '.repeat(200));
+			source.style.font = '16px/20px monospace';
+			source.fold.close(0);
+			await a.sleep(75);
+			source.scrollY.next(3);
+			a.equal(source.scrollTop, 60);
+			await a.sleep(75);
+			a.equal(source.cursorY.getVisibleFirst(), 4);
+			a.ok((source.cursor.getVisibleFirst() ?? 0) > 21, 'scrolling passes the start of the wrapped logical line');
+			a.equal(source.fold.range(0)?.closed, true);
+			source.scrollTop = 75;
+			a.equal(source.scrollY.index, 3.75);
+			source.scrollY.next();
+			a.equal(source.scrollTop, 95);
+			source.style.font = '24px/32px monospace';
+			source.style.transform = 'scale(1.5)';
+			await a.sleep(75);
+			source.scrollY.go(2);
+			a.equal(source.scrollTop, 64);
+			source.scrollY.nextPage(0.5);
+			a.equal(source.scrollTop, 64 + source.clientHeight / 2);
+			a.equal(source.cursor.index, 0);
+		});
+
+		it.testElement('keeps detached and hidden scroll cursors finite', async (a: TestApi) => {
+			const source = new Source();
+			source.setText('line\n'.repeat(100));
+			for (const cursor of [source.scrollX, source.scrollY]) {
+				cursor.go(Infinity);
+				cursor.nextPage();
+				cursor.previous();
+				a.equal(cursor.index, 0);
+				a.equalValues(cursor.range(-Infinity, Infinity), { start: 0, end: 0 });
+				a.equal(cursor.getVisibleFirst(), undefined);
+			}
+			const { source: hidden } = await createSourceEditor(a, 'line\n'.repeat(100));
+			hidden.style.display = 'none';
+			for (const cursor of [hidden.scrollX, hidden.scrollY]) {
+				cursor.go(5);
+				cursor.nextPage();
+				a.equal(cursor.index, 0);
+				a.equal(cursor.getVisibleLast(), undefined);
+			}
 		});
 
 		it.testElement('maps measured viewport targets into each cursor unit without reading or measuring text', async (a: TestApi) => {
@@ -1206,7 +1297,7 @@ export default spec('@cxl/ui.source', a => {
 				Buffer.prototype.getText = read;
 				Range.prototype.getBoundingClientRect = measure;
 			}
-			source.scrollY.go(10);
+			source.scrollY.go(0.5);
 			a.equal(source.cursorY.getVisibleFirst(), undefined, 'a pending scroll invalidates text targets');
 			await a.sleep(75);
 			a.equal(source.cursorY.getVisibleFirst(), 1);
@@ -1246,7 +1337,7 @@ export default spec('@cxl/ui.source', a => {
 			a.equal(source.fold.range(0)?.closed, true);
 			source.setText('wrapped '.repeat(200));
 			await a.sleep(75);
-			source.scrollY.go(40);
+			source.scrollY.go(2);
 			await a.sleep(75);
 			a.equal(source.cursorY.getVisibleFirst(), 0);
 			a.equal(source.cursorY.getVisibleLast(), 0);
@@ -1340,7 +1431,7 @@ export default spec('@cxl/ui.source', a => {
 				await editorAction(a, target, 'keyUp', 'j');
 				await a.sleep(100);
 				a.ok(repeated, 'native repeat events reach the binding');
-				a.ok(source.scrollY.index > source.clientHeight);
+				a.ok(source.scrollTop > source.clientHeight);
 				a.equal(source.cursor.index, 0);
 				a.equal(source.getText(), 'value\n'.repeat(300));
 			} finally {

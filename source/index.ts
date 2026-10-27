@@ -576,6 +576,7 @@ export class Source extends Code {
 		return element;
 	})();
 	protected readonly host = create('div', { id: 'body' });
+	protected readonly scrollMeasure = create('div', { id: 'scroll-measure' });
 	protected offsetY = 0;
 	protected readonly rowHeights = new Map<number, number>();
 	protected readonly redoRecords: HistoryRecord[] = [];
@@ -715,6 +716,13 @@ canvas {
 	width: calc(100% - var(--source-gutter-width, 0px));
 	white-space: pre-wrap;
 	word-break: break-word;
+}
+#scroll-measure {
+	visibility: hidden;
+	position: absolute;
+	top: 0; left: 0;
+	width: 1ch;
+	height: 1lh;
 }
 [part="fold-placeholder"] { opacity: 0; }
 #input {
@@ -1211,27 +1219,35 @@ canvas {
 	protected scrollCursor(axis: 'x' | 'y'): SourceCursorFeature {
 		const source = this;
 		const scroll = axis === 'x' ? 'scrollLeft' : 'scrollTop';
-		const extent = () => axis === 'x' ? source.clientWidth : source.clientHeight;
-		const maximum = () => Math.max(0, (axis === 'x' ? source.scrollWidth : source.scrollHeight) - extent());
-		const clamp = (value: number) => Number.isNaN(value) ? source[scroll] : Math.max(0, Math.min(value, maximum()));
+		const unit = () => parseFloat(getComputedStyle(source.scrollMeasure)[axis === 'x' ? 'width' : 'height']) || 0;
+		const pixels = () => axis === 'x' ? source.clientWidth : source.clientHeight;
+		const toUnits = (pixels: number) => {
+			const size = unit();
+			return size ? pixels / size : 0;
+		};
+		const index = () => toUnits(source[scroll]);
+		const extent = () => toUnits(pixels());
+		const maximum = () => toUnits(Math.max(0, (axis === 'x' ? source.scrollWidth : source.scrollHeight) - pixels()));
+		const clamp = (value: number) => Number.isNaN(value) ? index() : Math.max(0, Math.min(value, maximum()));
 		const go = (value: number) => {
 			source.revealPending = false;
-			source[scroll] = clamp(value);
+			const size = unit();
+			if (size) source[scroll] = clamp(value) * size;
 		};
 		const visible = (fraction: number) => source.isConnected && extent() > 0
-			? source[scroll] + extent() * fraction : undefined;
+			? index() + extent() * fraction : undefined;
 		return source.cursorFeature({
-			get index() { return source[scroll]; },
+			get index() { return index(); },
 			go,
 			indexAt: clamp,
-			reveal: () => go(source[scroll]),
-			range: (from = source[scroll], to = from) => ({ start: Math.min(clamp(from), clamp(to)), end: Math.max(clamp(from), clamp(to)) }),
+			reveal: () => go(index()),
+			range: (from = index(), to = from) => ({ start: Math.min(clamp(from), clamp(to)), end: Math.max(clamp(from), clamp(to)) }),
 			goStart: () => go(0),
 			goEnd: () => go(Infinity),
-			next: (count = 1) => go(source[scroll] + count),
-			previous: (count = 1) => go(source[scroll] - count),
-			nextPage: (count = 1) => go(source[scroll] + extent() * count),
-			previousPage: (count = 1) => go(source[scroll] - extent() * count),
+			next: (count = 1) => go(index() + count),
+			previous: (count = 1) => go(index() - count),
+			nextPage: (count = 1) => go(index() + extent() * count),
+			previousPage: (count = 1) => go(index() - extent() * count),
 			getVisibleFirst: () => visible(0),
 			getVisibleMiddle: () => visible(0.5),
 			getVisibleLast: () => visible(1),
@@ -2020,6 +2036,7 @@ canvas {
 			decorationRenderer.aboveCanvas,
 			text.foldHost,
 			text.measureElement,
+			this.scrollMeasure,
 		);
 		this.shadowRoot?.append(host);
 		this.updateSearchDecorationStyle();
