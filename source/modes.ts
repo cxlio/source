@@ -7,6 +7,7 @@ const modules = {
 	jsx: () => import('@cxl/gbc.javascript/highlight.js'),
 	tsx: () => import('@cxl/gbc.typescript/highlight.js'),
 	html: () => import('@cxl/gbc.html/highlight.js'),
+	xml: () => import('@cxl/gbc.xml/highlight.js'),
 	json: () => import('@cxl/gbc.json/highlight.js'),
 	gb: () => import('@cxl/gbc.compiler/highlight.js'),
 	markdown: () => import('@cxl/gbc.markdown/highlight.js'),

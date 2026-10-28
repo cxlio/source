@@ -1828,6 +1828,7 @@ export default spec('@cxl/ui.source', a => {
 				['jsx', 'const view = <Box />;', 'keyword'],
 				['tsx', 'const view: unknown = <Box />;', 'keyword'],
 				['html', '<main title="hello">text</main>', 'punctuation'],
+				['xml', '<root attr="hello">text</root>', 'punctuation'],
 				['json', '{"value": 1}', 'punctuation'],
 			] as const) {
 				const first = loadSourceHighlighter(mode);
@@ -1939,6 +1940,16 @@ export default spec('@cxl/ui.source', a => {
 			a.equal(source.fold.ranges.length, 0);
 		});
 
+		it.should('highlights XML declarations, CDATA and namespaced elements', async (a: TestApi) => {
+			const scanner = await loadSourceHighlighter('xml');
+			a.assert(scanner);
+			const value = '<?xml version="1.0"?>\n<ns:root xml:lang="en"><![CDATA[<tag/>]]></ns:root>';
+			const tokens = [...fullScan(scanner, value)];
+			for (const [text, kind] of [['<?xml version="1.0"?>', 'directive'], ['ns:root', 'tag'], ['xml:lang', 'attribute'], ['"en"', 'string'], ['<![CDATA[<tag/>]]>', 'string']] as const)
+				a.equal(highlightKind(tokens.find(token => token.start === value.indexOf(text))), kind);
+			a.equalValues(tokens.filter(token => highlightKind(token) === 'tag').map(token => value.slice(token.start, token.end)), ['ns:root', 'ns:root']);
+		});
+
 		it.should('highlights Python tokens', async (a: TestApi) => {
 			const scanner = await loadSourceHighlighter('python');
 			a.assert(scanner);
@@ -1991,6 +2002,7 @@ export default spec('@cxl/ui.source', a => {
 				['tsx', 'const view: unknown = <Box title="hi">{name as string}</Box>;', 'keyword'],
 				['json', '{"value": true}', 'punctuation'],
 				['html', '<main>value</main>', 'punctuation'],
+				['xml', '<?xml version="1.0"?>\n<root><![CDATA[<tag/>]]></root>', 'directive'],
 				['gb', 'main { value = 1 }', 'keyword'],
 				['basic', 'IF value THEN', 'keyword'],
 				['sh', 'if true; then', 'keyword'],

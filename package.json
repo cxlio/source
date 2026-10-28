@@ -11,6 +11,7 @@
 		"@cxl/gbc.javascript": "file:../gbc/dist/javascript/package",
 		"@cxl/gbc.typescript": "file:../gbc/dist/typescript/package",
 		"@cxl/gbc.html": "file:../gbc/dist/html/package",
+		"@cxl/gbc.xml": "file:../gbc/dist/xml/package",
 		"@cxl/gbc.compiler": "file:../gbc/dist/compiler/package",
 		"@cxl/gbc.basic": "file:../gbc/dist/basic/package",
 		"@cxl/gbc.markdown": "file:../gbc/dist/markdown/package",
