@@ -150,7 +150,6 @@ export interface SourceCursorFeature {
 	readonly index: number;
 	go(index: number): void;
 	range(from?: number, to?: number): SourceRange;
-	position(index?: number): SourceRange;
 	indexAt(position: number): number;
 	reveal(alignment?: SourceCursorAlignment): void;
 	goStart(): void;
@@ -1178,13 +1177,12 @@ canvas {
 		return this.selectionState.at(-1) ?? DefaultSelection;
 	}
 
-	protected cursorFeature(feature: Omit<SourceCursorFeature, 'position' | 'reveal' | 'nextLogical' | 'previousLogical'> &
+	protected cursorFeature(feature: Omit<SourceCursorFeature, 'reveal' | 'nextLogical' | 'previousLogical'> &
 		Partial<Pick<SourceCursorFeature, 'reveal' | 'nextLogical' | 'previousLogical'>>): SourceCursorFeature {
 		return {
 			get index() { return feature.index; },
 			go: feature.go,
 			range: feature.range,
-			position: (index = feature.index) => feature.range(index),
 			indexAt: feature.indexAt,
 			reveal: feature.reveal ?? ((alignment: SourceCursorAlignment = 'nearest') => {
 				if (this.isConnected) this.revealSelection?.(alignment);
@@ -1268,7 +1266,7 @@ canvas {
 	}
 
 	protected goColumn(ch: number) {
-		this.goTo(this.cursorX.position(ch).start);
+		this.goTo(this.cursorX.range(ch).start);
 	}
 
 	protected *displayPositions(index: number) {

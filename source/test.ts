@@ -1161,13 +1161,13 @@ export default spec('@cxl/ui.source', a => {
 			a.equalValues(source.scrollY.range(30, 10), { start: 10, end: 30 });
 			for (const cursor of [source.scrollX, source.scrollY]) {
 				const index = cursor.index;
-				a.equalValues(cursor.position(), { start: index, end: index });
+				a.equalValues(cursor.range(), { start: index, end: index });
 				a.equal(cursor.indexAt(index), index);
 				cursor.nextLogical(5);
 				cursor.previousLogical(5);
 				cursor.reveal('middle');
 				a.equal(cursor.index, index);
-				a.equalValues(cursor.position(-Infinity), { start: 0, end: 0 });
+				a.equalValues(cursor.range(-Infinity), { start: 0, end: 0 });
 				a.equal(cursor.indexAt(NaN), index);
 			}
 			source.scrollY.go(NaN);
@@ -2518,8 +2518,8 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 					protected override connectedCallback() {
 						super.connectedCallback();
 						this.selection.block(
-							this.cursorY.position(0).start + 1,
-							this.cursorY.position(2).start + 4,
+							this.cursorY.range(0).start + 1,
+							this.cursorY.range(2).start + 4,
 						);
 					}
 				},
@@ -2740,7 +2740,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 
 		it.testElement('creates rectangular block selections', async a => {
 			const { source } = await createSourceEditor(a, 'abcd\nx\n\nwxyz');
-			const end = source.cursorY.position(3).start + 3;
+			const end = source.cursorY.range(3).start + 3;
 
 			source.selection.block(1, end);
 			a.equalValues(source.selection.ranges(), [
@@ -2772,8 +2772,8 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 		it.testElement('edits multiple selections as one history entry', async a => {
 			const { source } = await createSourceEditor(a, 'ab\ncd');
 			source.selection.block(
-				source.cursorY.position(0).start + 1,
-				source.cursorY.position(1).start + 1,
+				source.cursorY.range(0).start + 1,
+				source.cursorY.range(1).start + 1,
 			);
 
 			source.edit.replace('X');
@@ -2850,7 +2850,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 				a.ok(Reflect.has(cursor, 'getVisibleFirst'));
 				a.ok(Reflect.has(cursor, 'getVisibleMiddle'));
 				a.ok(Reflect.has(cursor, 'getVisibleLast'));
-				for (const method of ['position', 'indexAt', 'reveal', 'nextLogical', 'previousLogical'])
+				for (const method of ['range', 'indexAt', 'reveal', 'nextLogical', 'previousLogical'])
 					a.ok(Reflect.has(cursor, method), `${method} is available on every cursor`);
 			}
 		});
@@ -2874,12 +2874,12 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 					source.cursor.go(offset);
 					a.equal(source.cursorX.index, column);
 					a.equal(source.cursorX.indexAt(offset), column);
-					a.equalValues(source.cursorX.position(), { start: offset, end: offset });
+					a.equalValues(source.cursorX.range(), { start: offset, end: offset });
 					source.cursorX.go(column);
 					a.equal(source.cursor.index, offset);
 				}
 				for (const [column, offset] of [[2, 0], [5, 1], [8, 4], [10, 6], [NaN, 0], [-Infinity, 0], [Infinity, 14], [6.9, 2]] as const) {
-					a.equalValues(source.cursorX.position(column), { start: offset, end: offset });
+					a.equalValues(source.cursorX.range(column), { start: offset, end: offset });
 				}
 				a.equal(source.cursorX.indexAt(3), 6);
 				a.equal(source.cursorX.indexAt(5), 7);
@@ -2917,12 +2917,12 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			];
 			for (const { cursor, index, start, end } of cases) {
 				a.equal(cursor.index, index);
-				a.equalValues(cursor.position(), { start, end });
-				a.equalValues(cursor.position(index), { start, end });
+				a.equalValues(cursor.range(), { start, end });
+				a.equalValues(cursor.range(index), { start, end });
 				a.equal(cursor.indexAt(start), index);
-				a.equal(cursor.position(Infinity).end, 13);
+				a.equal(cursor.range(Infinity).end, 13);
 				a.equal(cursor.indexAt(NaN), 0);
-				a.equalValues(cursor.position(NaN), cursor.position(-Infinity));
+				a.equalValues(cursor.range(NaN), cursor.range(-Infinity));
 			}
 			a.equal(source.cursor.index, 10);
 			source.cursorToken.goStart();
@@ -2977,7 +2977,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			}
 		});
 
-		it.testElement('navigates the public cursor by index and position', async a => {
+		it.testElement('navigates the public cursor by index and range', async a => {
 			const { source } = await createSourceEditor(a, 'one\ntwo\nthree');
 			const cursor: {
 				readonly index: number;
@@ -2989,7 +2989,6 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			a.equal(cursor.index, 6);
 			a.equalValues(cursor.range(), { start: 6, end: 6 });
 			a.equalValues(cursor.range(6, 2), { start: 2, end: 6 });
-			a.equalValues(source.cursor.position(), { start: 6, end: 6 });
 			a.equal(source.cursor.indexAt(11), 11);
 
 			cursor.go(Infinity);
@@ -3699,8 +3698,8 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 		it.testElement('edits and copies block selections through native input', async a => {
 			const { source, target } = await createSourceEditor(a, 'ab\ncd');
 			source.selection.block(
-				source.cursorY.position(0).start,
-				source.cursorY.position(1).start + 1,
+				source.cursorY.range(0).start,
+				source.cursorY.range(1).start + 1,
 			);
 			a.equal(clipboardSelection(target), 'a\nc');
 
@@ -3750,7 +3749,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			);
 			source.selection.block(
 				0,
-				source.cursorY.position(80).start + 2,
+				source.cursorY.range(80).start + 2,
 			);
 			await a.sleep(50);
 			a.ok(source.scrollTop > 0, 'block head scrolls into the viewport');
@@ -3812,8 +3811,8 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			const editContext = source.editContext;
 			a.assert(editContext, 'EditContext is active');
 			source.selection.block(
-				source.cursorY.position(0).start + 1,
-				source.cursorY.position(1).start + 1,
+				source.cursorY.range(0).start + 1,
+				source.cursorY.range(1).start + 1,
 			);
 
 			editContext.dispatchEvent(
@@ -4254,8 +4253,8 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			const measure = source.shadowRoot?.querySelector<HTMLElement>('#measure');
 			a.assert(canvas && measure, 'selection rendering surface exists');
 			source.selection.block(
-				source.cursorY.position(0).start + 8,
-				source.cursorY.position(1).start + 60,
+				source.cursorY.range(0).start + 8,
+				source.cursorY.range(1).start + 60,
 			);
 			await a.sleep(20);
 			const bounds = paintedBounds(canvas);
@@ -4625,7 +4624,7 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			source.cursorX.goEnd();
 			const end = source.getText().indexOf('\ntail');
 			a.equal(source.cursor.index, end);
-			a.equalValues(source.cursorX.position(), { start: end, end });
+			a.equalValues(source.cursorX.range(), { start: end, end });
 			a.equal(source.cursorX.indexAt(end), source.cursorX.index);
 			a.equalValues(source.cursorX.range(0, Infinity), { start: 0, end });
 			source.cursorX.goStart();
