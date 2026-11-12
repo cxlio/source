@@ -4019,6 +4019,86 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			}
 		});
 
+		it.testElement('aligns fat cursors with visual row boxes', async (a: TestApi) => {
+			const { source, target } = await createSourceEditor(a, 'alpha\n\nbeta\n');
+			source.fatCursor = true;
+			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="cursor"]');
+			a.assert(canvas);
+			const dpr = window.devicePixelRatio || 1;
+			for (const spacing of ['normal', '24px', '40px']) {
+				source.style.lineHeight = spacing;
+				await a.sleep(50);
+				await editorAction(a, target, 'press', 'Home');
+				source.cursor.go(6);
+				await a.sleep(20);
+				const blank = paintedBounds(canvas);
+				a.assert(blank);
+				const lineHeight = spacing === 'normal' ? (blank.bottom - blank.top + 1) / dpr : parseFloat(spacing);
+				source.fatCursor = false;
+				source.cursor.go(0);
+				await a.sleep(20);
+				const thin = paintedBounds(canvas);
+				source.fatCursor = true;
+				await a.sleep(20);
+				for (const [index, row] of [[0, 0], [6, 1], [7, 2], [12, 3]] as const) {
+					source.cursor.go(index);
+					await a.sleep(20);
+					a.equalValues(paintedBounds(canvas), {
+						top: row * lineHeight * dpr,
+						bottom: (row + 1) * lineHeight * dpr - 1,
+					}, 'block cursor fills the visual row');
+				}
+				source.fatCursor = false;
+				source.cursor.go(0);
+				await a.sleep(20);
+				a.equalValues(paintedBounds(canvas), thin, 'thin cursor geometry is preserved');
+				source.fatCursor = true;
+				source.setText('a'.repeat(120));
+				await a.sleep(50);
+				const fragments = source.geometry.fragments({ start: 0, end: 120 });
+				a.ok(fragments.length > 1, 'text wraps');
+				for (const [row, fragment] of fragments.entries()) {
+					source.cursor.go(fragment.start);
+					await a.sleep(20);
+					a.equalValues(paintedBounds(canvas), {
+						top: row * lineHeight * dpr,
+						bottom: (row + 1) * lineHeight * dpr - 1,
+					}, 'wrapped block cursor fills one visual row');
+				}
+				source.setText('alpha\n\nbeta\n');
+				await a.sleep(50);
+			}
+		});
+
+		it.testElement('supports a fat cursor on empty lines', async (a: TestApi) => {
+			const { source, target } = await createSourceEditor(a, '');
+			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>('canvas[part="cursor"]');
+			a.assert(canvas);
+			const measure = document.createElement('canvas').getContext('2d');
+			a.assert(measure);
+			for (const fontSize of [12, 24]) {
+				source.style.fontSize = `${fontSize}px`;
+				measure.font = getComputedStyle(source).font;
+				const expected = Math.trunc(measure.measureText(' ').width) * (window.devicePixelRatio || 1);
+				for (const value of ['', 'alpha\n\nbeta', 'alpha\n']) {
+					source.setText(value);
+					source.fatCursor = false;
+					await a.sleep(50);
+					await editorAction(a, target, 'press', 'Home');
+					source.cursor.go(value ? 6 : 0);
+					await a.sleep(20);
+					const thinWidth = paintedWidth(canvas);
+					source.fatCursor = true;
+					await a.sleep(20);
+					a.equal(paintedWidth(canvas), expected, 'empty-line block spans a space');
+					a.ok(paintedWidth(canvas) > thinWidth);
+					source.fatCursor = false;
+					await a.sleep(20);
+					a.equal(paintedWidth(canvas), thinWidth, 'thin width is preserved');
+				}
+			}
+		});
+
 		it.testElement('supports a fat cursor', async (a: TestApi) => {
 			const { source, target } = await createSourceEditor(a, 'alpha');
 			const canvas = source.shadowRoot?.querySelector<HTMLCanvasElement>(

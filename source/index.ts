@@ -814,8 +814,9 @@ canvas {
 							cursor.hideCaret();
 							return;
 						}
+						const lineHeight = $.fatCursor ? parseFloat(getComputedStyle($.scrollMeasure).height) : undefined;
 						const carets = visible.flatMap(({ selection }) => {
-							const caret = text.getCaret(buffer.positionAt(selection.head));
+							const caret = text.getCaret(buffer.positionAt(selection.head), lineHeight);
 							return caret ? [caret] : [];
 						});
 						cursor.setPositions(carets, $.offsetY);

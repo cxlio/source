@@ -494,17 +494,17 @@ export function textCanvas(host: HTMLElement) {
 		}
 	}
 
-	function caretRect(sourceLine: SourceLine, ch: number, part?: SubLine, emptyX = 0): TextRect {
+	function caretRect(sourceLine: SourceLine, ch: number, part?: SubLine, emptyX = 0, lineHeight?: number): TextRect {
 		return {
 			x: part ? getCharacterX(part, ch) : emptyX,
-			y: sourceLine.offsetTop + (part?.y ?? 0),
-			width: part ? getCharacterWidth(part, ch) : 1,
-			height: part?.height ?? sourceLine.height,
+			y: sourceLine.offsetTop + (lineHeight ? (part?.lineIndex ?? 0) * lineHeight : (part?.y ?? 0)),
+			width: part ? getCharacterWidth(part, ch) : ctx.measureText(' ').width,
+			height: lineHeight ?? part?.height ?? sourceLine.height,
 			line: sourceLine.row,
 		};
 	}
 
-	function getCaret(position: TextPosition): TextRect | undefined {
+	function getCaret(position: TextPosition, lineHeight?: number): TextRect | undefined {
 		for (const sourceLine of toRender) {
 			const ch = projectedIndex(sourceLine, position);
 			if (ch === undefined) continue;
@@ -513,15 +513,16 @@ export function textCanvas(host: HTMLElement) {
 			if (!part && sourceLine.text.length) {
 				textN.textContent = sourceLine.text;
 				const rect = getCharRect(Math.min(ch, sourceLine.text.length - 1));
+				const y = rect.y - measureElement.getBoundingClientRect().y;
 				return {
 					x: rect.x - host.getBoundingClientRect().x + (ch === sourceLine.text.length ? rect.width : 0),
-					y: sourceLine.offsetTop + rect.y - measureElement.getBoundingClientRect().y,
+					y: sourceLine.offsetTop + (lineHeight ? Math.floor((y + rect.height / 2) / lineHeight) * lineHeight : y),
 					width: rect.width,
-					height: rect.height,
+					height: lineHeight ?? rect.height,
 					line: position.line,
 				};
 			}
-			return { ...caretRect(sourceLine, ch, part, measureElement.offsetLeft), line: position.line };
+			return { ...caretRect(sourceLine, ch, part, measureElement.offsetLeft, lineHeight), line: position.line };
 		}
 	}
 
