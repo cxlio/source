@@ -14,13 +14,14 @@ const modules = {
 	basic: () => import('@cxl/gbc.basic/highlight.js'),
 	shell: () => import('@cxl/gbc.cmd/highlight.js'),
 	python: () => import('@cxl/gbc.python/highlight.js'),
+	go: () => import('@cxl/gbc.go/highlight.js'),
 };
 
 const pending = new Map<string, Promise<Highlighter | undefined>>();
 const aliases: Readonly<Record<string, string>> = {
 	js: 'javascript', mjs: 'javascript', cjs: 'javascript', node: 'javascript', ecmascript: 'javascript',
 	ts: 'typescript', md: 'markdown', sh: 'shell', bash: 'shell', cmd: 'shell',
-	py: 'python',
+	py: 'python', golang: 'go',
 };
 
 export function loadSourceHighlighter(mode: string): Promise<SourceHighlighter | undefined> {

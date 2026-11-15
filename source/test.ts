@@ -1052,7 +1052,8 @@ export default spec('@cxl/ui.source', a => {
 		for (const backend of ['edit-context', 'textarea'] as const) {
 			it.testElement(`gates and resynchronizes native ${backend} input across reconnects`, async (a: TestApi) => {
 				const descriptor = Object.getOwnPropertyDescriptor(window, 'EditContext');
-				if (backend === 'textarea') Object.defineProperty(window, 'EditContext', { configurable: true, value: undefined });
+				const inputWindow: { EditContext?: typeof window.EditContext } = window;
+				if (backend === 'textarea') inputWindow.EditContext = undefined;
 				try {
 					const { source, target } = await createSourceEditor(a, 'ab');
 					source.selection.set(1);
@@ -1830,6 +1831,7 @@ export default spec('@cxl/ui.source', a => {
 				['html', '<main title="hello">text</main>', 'punctuation'],
 				['xml', '<root attr="hello">text</root>', 'punctuation'],
 				['json', '{"value": 1}', 'punctuation'],
+				['go', 'package main', 'keyword'],
 			] as const) {
 				const first = loadSourceHighlighter(mode);
 				const second = loadSourceHighlighter(mode);
@@ -1950,6 +1952,15 @@ export default spec('@cxl/ui.source', a => {
 			a.equalValues(tokens.filter(token => highlightKind(token) === 'tag').map(token => value.slice(token.start, token.end)), ['ns:root', 'ns:root']);
 		});
 
+		it.should('highlights Go tokens', async (a: TestApi) => {
+			const scanner = await loadSourceHighlighter('go');
+			a.assert(scanner);
+			const value = 'package main\nvar value int = 42\nvar text = `hello\nworld`\nvar flag = true // comment';
+			const tokens = [...fullScan(scanner, value)];
+			for (const [text, kind] of [['package', 'keyword'], ['int', 'type'], ['42', 'number'], ['`hello\nworld`', 'string'], ['true', 'literal'], ['// comment', 'comment']] as const)
+				a.equal(highlightKind(tokens.find(token => token.start === value.indexOf(text))), kind);
+		});
+
 		it.should('highlights Python tokens', async (a: TestApi) => {
 			const scanner = await loadSourceHighlighter('python');
 			a.assert(scanner);
@@ -2008,6 +2019,8 @@ export default spec('@cxl/ui.source', a => {
 				['sh', 'if true; then', 'keyword'],
 				['py', 'import json', 'keyword'],
 				['python', 'import json', 'keyword'],
+				['go', 'package main', 'keyword'],
+				['golang', 'package main', 'keyword'],
 				['markdown', '# Nested', 'heading'],
 			] as const) {
 				for (const marker of ['```', '~~~~']) {
@@ -2117,10 +2130,10 @@ export default spec('@cxl/ui.source', a => {
 			}
 		});
 
-		it.testElement('highlights GB, Markdown, BASIC and shell in both components', async a => {
+		it.testElement('highlights GB, Markdown, BASIC, shell and Go in both components', async a => {
 			const code = await createCode(a, '');
 			const { source } = await createSourceEditor(a, '');
-			for (const [mode, value] of Object.entries(ModeExamples)) {
+			for (const [mode, value] of Object.entries({ ...ModeExamples, go: 'package main\nfunc main() { println(42) }' })) {
 				code.mode = source.mode = mode;
 				code.setText(value);
 				source.setText(value);
@@ -2373,6 +2386,7 @@ export default spec('@cxl/ui.source', a => {
 		for (const { name, examples, width, height, rowHeight, columns } of [
 			{ name: 'syntax-highlighting', examples: { typescript: value }, width: 320, height: 296, rowHeight: 144, columns: 1 },
 			{ name: 'markdown-fences', examples: { markdown: '# Embedded code\n```mjs\nconst value = 42;\n// highlighted body\n```' }, width: 648, height: 160, rowHeight: 160, columns: 2 },
+			{ name: 'go-highlighting', examples: { go: 'package main\nfunc main() {\n  println("hello", 42)\n}' }, width: 648, height: 112, rowHeight: 112, columns: 2 },
 			{ name: 'additional-modes', examples: ModeExamples, width: 648, height: 408, rowHeight: 96, columns: 2 },
 			{ name: 'jsx-tsx-modes', examples: { jsx: 'const view = <Box title="hi">\n  {name}\n</Box>;', tsx: 'const view: unknown = <Box>\n  {name as string}\n</Box>;' }, width: 648, height: 200, rowHeight: 96, columns: 2 },
 			{ name: 'incremental-highlighting', examples: { javascript: 'const value = 1;\n/* note\n * details\n */\nvalue;\n' }, width: 648, height: 160, rowHeight: 160, columns: 2 },
@@ -4734,24 +4748,26 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			await a.sleep(60);
 			a.equal(source.fold.range(0), undefined, 'parsing removes a fold whose closing token was deleted');
 		});
-		const foldEditFigure = it.figure('fold-indicator-edit',
-			'<c-source-fold-edit style="display:block;width:320px;height:160px;font:12px monospace;background:#fff;color:#111"></c-source-fold-edit>',
-			() => {
-				if (customElements.get('c-source-fold-edit')) return;
-				customElements.define('c-source-fold-edit', class extends Source {
-					constructor() {
-						super();
-						this.mode = 'javascript';
-						this.gutters = [lineNumbers(), foldGutter(this.fold)];
-						this.setText('function example() {\n  const value = 12;\n}\nafter();');
-						this.fold.onChange.filter(() => !!this.fold.range(0)).take(1).subscribe(() => {
-							const start = this.getText().indexOf('12');
-							this.edit.replace('42', { start, end: start + 2 });
-						});
-					}
+		it.testElement('fold edit screenshot', screenshots => {
+			const figure = screenshots.figure('fold-indicator-edit',
+				'<c-source-fold-edit style="display:block;width:320px;height:160px;font:12px monospace;background:#fff;color:#111"></c-source-fold-edit>',
+				() => {
+					if (customElements.get('c-source-fold-edit')) return;
+					customElements.define('c-source-fold-edit', class extends Source {
+						constructor() {
+							super();
+							this.mode = 'javascript';
+							this.gutters = [lineNumbers(), foldGutter(this.fold)];
+							this.setText('function example() {\n  const value = 12;\n}\nafter();');
+							this.fold.onChange.filter(() => !!this.fold.range(0)).take(1).subscribe(() => {
+								const start = this.getText().indexOf('12');
+								this.edit.replace('42', { start, end: start + 2 });
+							});
+						}
+					});
 				});
-			});
-		it.afterAll(() => foldEditFigure);
+			screenshots.afterAll(() => figure);
+		});
 		it.testElement('does not fold parentheses without fold metadata', async (a: TestApi) => {
 			for (const value of ['invoke(\n  hidden\n);', 'invoke(\n  hidden']) {
 				const { source } = await createSourceEditor(a, value);
@@ -5028,66 +5044,66 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			a.equal(source.shadowRoot?.querySelector('[part="fold-placeholder"]'), null);
 			a.equal(source.getText(), 'replacement');
 		});
-		let figureStarted = false;
-		const figure = it.figure('fold-gutter',
-			'<div style="display:flex;gap:8px;width:976px;height:216px;background:#fff;color:#111">' +
-			['open', 'nested', 'outer'].map(state =>
-				`<div>${state}<c-source-fold-${state} style="display:block;width:320px;height:192px;font:16px/24px monospace;color:#111"></c-source-fold-${state}></div>`,
-			).join('') + '</div>',
-			(node) => {
-				figureStarted = true;
-				(node as HTMLElement).style.width = '976px';
-				for (const [state, line] of [['open', -1], ['nested', 2], ['outer', 0]] as const) {
-					const name = `c-source-fold-${state}`;
-					if (customElements.get(name)) continue;
-					customElements.define(name, class extends Source {
-						constructor() {
-							super();
-							this.highlighter = foldHighlighter;
-							this.gutters = [lineNumbers(), foldGutter(this.fold)];
-							this.setText('{\n  outer\n  {\n    inner\n  }\n}\nafter');
-							if (line >= 0) this.fold.onChange
-								.filter(() => this.fold.range(line) !== undefined)
-								.take(1)
-								.subscribe(() => this.fold.close(line));
-						}
-					});
-				}
-			});
-		it.afterAll(async () => { if (figureStarted) await figure; });
-		let canvasFigureStarted = false;
-		const canvasFigure = it.figure('fold-canvas',
-			'<div style="display:flex;gap:8px;width:976px;height:240px;background:#fff;color:#111">' +
-			['light', 'dark', 'wrapped', 'multiple'].map(state =>
-				`<div>${state}<c-source-fold-canvas-${state} style="display:block;width:238px;height:216px;font:16px/24px monospace;background:${state === 'dark' ? '#111' : '#fff'};color:${state === 'dark' ? '#eee' : '#111'}"></c-source-fold-canvas-${state}></div>`,
-			).join('') + '</div>',
-			node => {
-				canvasFigureStarted = true;
-				(node as HTMLElement).style.width = '976px';
-				for (const state of ['light', 'dark', 'wrapped', 'multiple']) {
-					const name = `c-source-fold-canvas-${state}`;
-					if (customElements.get(name)) continue;
-					customElements.define(name, class extends Source {
-						constructor() {
-							super();
-							this.tokenColors = { identifier: state === 'dark' ? '#eeeeee' : '#111111', punctuation: state === 'dark' ? '#ffccbc' : '#1976d2', number: '#e64a19' };
-							if (state === 'multiple') {
-								this.mode = 'javascript';
-								this.setText('one({\n  first\n}) + two({\n  second\n}).next(42);');
-							} else {
-								this.highlighter = function* (source) {
-									yield { source, start: source.indexOf('BEGIN'), end: source.indexOf('BEGIN') + 5, line: 0, kind: 'keyword', foldStart: 1 };
-									yield { source, start: source.indexOf('END IF'), end: source.indexOf('END IF') + 6, line: 2, kind: 'keyword', foldEnd: 1 };
-									yield { source, start: source.indexOf('END IF') + 6, end: source.length, line: 2, kind: 'identifier' };
-								};
-								this.setText(`${state === 'wrapped' ? 'before a long header BEGIN' : 'before BEGIN'}\n  hidden\nEND IF ${state === 'wrapped' ? 'after with a long suffix' : 'after'}`);
+		it.testElement('fold gutter screenshot', screenshots => {
+			const figure = screenshots.figure('fold-gutter',
+				'<div style="display:flex;gap:8px;width:976px;height:216px;background:#fff;color:#111">' +
+				['open', 'nested', 'outer'].map(state =>
+					`<div>${state}<c-source-fold-${state} style="display:block;width:320px;height:192px;font:16px/24px monospace;color:#111"></c-source-fold-${state}></div>`,
+				).join('') + '</div>',
+				(node) => {
+					(node as HTMLElement).style.width = '976px';
+					for (const [state, line] of [['open', -1], ['nested', 2], ['outer', 0]] as const) {
+						const name = `c-source-fold-${state}`;
+						if (customElements.get(name)) continue;
+						customElements.define(name, class extends Source {
+							constructor() {
+								super();
+								this.highlighter = foldHighlighter;
+								this.gutters = [lineNumbers(), foldGutter(this.fold)];
+								this.setText('{\n  outer\n  {\n    inner\n  }\n}\nafter');
+								if (line >= 0) this.fold.onChange
+									.filter(() => this.fold.range(line) !== undefined)
+									.take(1)
+									.subscribe(() => this.fold.close(line));
 							}
-							this.fold.onChange.filter(() => this.fold.range(0) !== undefined).take(1).subscribe(() => this.fold.closeAll());
-						}
-					});
-				}
-			});
-		it.afterAll(async () => { if (canvasFigureStarted) await canvasFigure; });
+						});
+					}
+				});
+			screenshots.afterAll(() => figure);
+		});
+		it.testElement('fold canvas screenshot', screenshots => {
+			const figure = screenshots.figure('fold-canvas',
+				'<div style="display:flex;gap:8px;width:976px;height:240px;background:#fff;color:#111">' +
+				['light', 'dark', 'wrapped', 'multiple'].map(state =>
+					`<div>${state}<c-source-fold-canvas-${state} style="display:block;width:238px;height:216px;font:16px/24px monospace;background:${state === 'dark' ? '#111' : '#fff'};color:${state === 'dark' ? '#eee' : '#111'}"></c-source-fold-canvas-${state}></div>`,
+				).join('') + '</div>',
+				node => {
+					(node as HTMLElement).style.width = '976px';
+					for (const state of ['light', 'dark', 'wrapped', 'multiple']) {
+						const name = `c-source-fold-canvas-${state}`;
+						if (customElements.get(name)) continue;
+						customElements.define(name, class extends Source {
+							constructor() {
+								super();
+								this.tokenColors = { identifier: state === 'dark' ? '#eeeeee' : '#111111', punctuation: state === 'dark' ? '#ffccbc' : '#1976d2', number: '#e64a19' };
+								if (state === 'multiple') {
+									this.mode = 'javascript';
+									this.setText('one({\n  first\n}) + two({\n  second\n}).next(42);');
+								} else {
+									this.highlighter = function* (source) {
+										yield { source, start: source.indexOf('BEGIN'), end: source.indexOf('BEGIN') + 5, line: 0, kind: 'keyword', foldStart: 1 };
+										yield { source, start: source.indexOf('END IF'), end: source.indexOf('END IF') + 6, line: 2, kind: 'keyword', foldEnd: 1 };
+										yield { source, start: source.indexOf('END IF') + 6, end: source.length, line: 2, kind: 'identifier' };
+									};
+									this.setText(`${state === 'wrapped' ? 'before a long header BEGIN' : 'before BEGIN'}\n  hidden\nEND IF ${state === 'wrapped' ? 'after with a long suffix' : 'after'}`);
+								}
+								this.fold.onChange.filter(() => this.fold.range(0) !== undefined).take(1).subscribe(() => this.fold.closeAll());
+							}
+						});
+					}
+				});
+			screenshots.afterAll(() => figure);
+		});
 
 		it.testElement('paints highlight kinds and preserves syntax kinds', async (a: TestApi) => {
 			const code = await createCode(a, '{');
