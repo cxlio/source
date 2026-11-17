@@ -3139,6 +3139,35 @@ if (${JSON.stringify(name)} === 'incremental-highlighting') {
 			]);
 		});
 
+		it.testElement('navigates search matches without selecting text', async a => {
+			const { source } = await createSourceEditor(a, 'one two ONE');
+			const options = { select: false, caseSensitive: false };
+			source.selection.begin();
+			a.equalValues(source.search.find(/one/i, options), { start: 0, end: 3 });
+			a.equalValues(source.selection.range(), { start: 0, end: 0 });
+			a.equalValues(source.search.find(/one/i, options), { start: 8, end: 11 });
+			a.equalValues(source.selection.range(), { start: 8, end: 8 });
+			a.equalValues(source.search.find(/one/i, options), { start: 0, end: 3 });
+			a.equalValues(
+				source.search.find(/one/i, { ...options, reverse: true }),
+				{ start: 8, end: 11 },
+			);
+			source.cursor.previous();
+			a.equalValues(source.selection.range(), { start: 7, end: 7 });
+			a.equalValues(source.search.find('missing', options), undefined);
+			a.equal(source.cursor.index, 7);
+			a.equalValues(source.search.find(/(?=o)/i, options), { start: 8, end: 8 });
+			a.equalValues(source.search.find(/(?=o)/i, options), { start: 0, end: 0 });
+			source.search.find('one', options);
+			source.search.replaceNext('one', 'first', options);
+			a.equal(source.getText(), 'first two ONE');
+
+			source.cursor.goStart();
+			source.search.find(/first|one/i, options);
+			a.equalValues(source.search.findNext(), { start: 10, end: 13 });
+			a.equalValues(source.selection.range(), { start: 10, end: 13 });
+		});
+
 		it.testElement('paints visible range decorations through custom painters', async (a: TestApi) => {
 			const { source } = await createSourceEditor(
 				a,

@@ -188,13 +188,17 @@ export interface SourceSearchOptions {
 	caseSensitive?: boolean;
 }
 
+export interface SourceFindOptions extends SourceSearchOptions {
+	select?: boolean;
+}
+
 export interface SourceSearchFeature {
 	lastSearch?: SourceSearchQuery;
 	lastOptions?: SourceSearchOptions;
 	lastReplace?: string;
 	find(
 		query?: SourceSearchQuery,
-		options?: SourceSearchOptions,
+		options?: SourceFindOptions,
 	): SourceRange | undefined;
 	findAll(query?: SourceSearchQuery, options?: SourceSearchOptions): SourceRange[];
 	findNext(): SourceRange | undefined;
@@ -527,16 +531,9 @@ export class Source extends Code {
 		) => {
 			if (value === undefined) return;
 			this.search.lastReplace = value;
-			const selection = this.selection.range();
-			const active = this.activeSearch;
 			const range =
-				active !== undefined &&
-				active.query === query &&
-				active.caseSensitive === options?.caseSensitive &&
-				active.range.start === selection.start &&
-				active.range.end === selection.end
-					? selection
-					: this.findSearch(query, options);
+				this.activeMatch(query, options?.caseSensitive) ??
+				this.findSearch(query, options);
 			if (range) this.edit.replace(value, range);
 		},
 		replaceAll: (
@@ -1680,23 +1677,41 @@ canvas {
 		return [...searchMatches(this.getText(), query, options.caseSensitive)];
 	}
 
+	protected activeMatch(
+		query: SourceSearchQuery | undefined,
+		caseSensitive: boolean | undefined,
+	) {
+		const active = this.activeSearch;
+		if (!active || active.caseSensitive !== caseSensitive) return;
+		if (
+			active.query !== query &&
+			!(
+				active.query instanceof RegExp &&
+				query instanceof RegExp &&
+				active.query.source === query.source &&
+				active.query.flags === query.flags
+			)
+		)
+			return;
+
+		const { start, end } = this.selection.range();
+		if (
+			start === active.range.start &&
+			(end === start || end === active.range.end)
+		)
+			return active.range;
+	}
+
 	protected findSearch(
 		query: SourceSearchQuery | undefined,
-		options: SourceSearchOptions = {},
+		{ select = true, ...options }: SourceFindOptions = {},
 	) {
 		if (query === undefined) return;
-		const current = this.selection.range();
-		const active = this.activeSearch;
+		const active = this.activeMatch(query, options.caseSensitive);
+		const current = active ?? this.selection.range();
 		const reverse = options.reverse ?? false;
 		let boundary = reverse ? current.start : current.end;
-		if (
-			active?.query === query &&
-			active.caseSensitive === options.caseSensitive &&
-			active.range.start === current.start &&
-			active.range.end === current.end &&
-			current.start === current.end
-		)
-			boundary += reverse ? -1 : 1;
+		if (active && active.start === active.end) boundary += reverse ? -1 : 1;
 
 		let first: SourceRange | undefined;
 		let last: SourceRange | undefined;
@@ -1717,12 +1732,16 @@ canvas {
 		}
 		match ??= reverse ? last : first;
 		this.search.lastSearch = query;
-		this.search.lastOptions = { ...options };
+		this.search.lastOptions = options;
 		if (!match) {
-			this.selection.set(this.cursor.index);
+			if (!select) this.activeSearch = undefined;
+			else this.selection.set(this.cursor.index);
 			return;
 		}
-		this.selection.set(match.start, match.end);
+		if (!select) {
+			this.selection.end();
+			this.selection.set(match.start);
+		} else this.selection.set(match.start, match.end);
 		this.activeSearch = {
 			query,
 			caseSensitive: options.caseSensitive,
